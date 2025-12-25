@@ -112,6 +112,9 @@ class OutputDTO(BaseModel):
     recommendations: RecommendationsDTO = Field(default_factory=RecommendationsDTO)
     warnings: List[str] = Field(default_factory=list, description="Warnings")
     errors: List[str] = Field(default_factory=list, description="Errors")
+    # Receiver gain values
+    lna_gain: Optional[float] = Field(default=None, description="LNA gain used in simulation, dB")
+    vga_gain: Optional[float] = Field(default=None, description="VGA gain used in simulation, dB")
     # Signal data for visualization (stored as lists for JSON serialization)
     tx_signal: Optional[List[float]] = Field(default=None, description="Transmitted signal (after TX transducer)")
     signal_at_bottom: Optional[List[float]] = Field(default=None, description="Signal at bottom (after channel, before reflection)")

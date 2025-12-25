@@ -371,6 +371,8 @@ class Simulator:
                 sigma_D=sigma_D,
                 SNR_ADC=snr_adc,
                 clipping_flags=clipping,
+                lna_gain=receiver.G_LNA,  # LNA gain used in simulation
+                vga_gain=receiver.current_G_VGA,  # VGA gain used in simulation
                 tx_signal=reference_signal_vis.tolist() if len(reference_signal_vis) > 0 else None,  # Stage 1: Original CHIRP (visualization)
                 signal_at_bottom=signal_after_water_forward.tolist() if len(signal_after_water_forward) > 0 else None,  # Stage 2: After water forward
                 received_signal=signal_after_water_backward.tolist() if len(signal_after_water_backward) > 0 else None,  # Stage 3: After water backward

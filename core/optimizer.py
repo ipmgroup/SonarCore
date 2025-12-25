@@ -115,8 +115,10 @@ When constraints are violated, the optimizer suggests parameter changes:
         suggested_changes = self.suggest_parameter_changes(input_dto, recommendations)
         
         # Build optimized parameters section
+        # Show section if there are suggested changes OR VGA gain recommendations
+        has_vga_recommendation = recommendations.increase_G_VGA or recommendations.decrease_G_VGA
         optimized_params_text = ""
-        if suggested_changes:
+        if suggested_changes or has_vga_recommendation:
             optimized_params_text += "\n\n=== OPTIMIZED PARAMETERS ===\n\n"
             optimized_params_text += "Current values -> Suggested values:\n\n"
             
@@ -139,12 +141,13 @@ When constraints are violated, the optimizer suggests parameter changes:
                 change_pct = ((suggested - current) / current) * 100
                 optimized_params_text += f"f_end (end frequency): {current:.2f} Hz -> {suggested:.2f} Hz ({change_pct:+.1f}%)\n"
             
-            # Add VGA gain if needed
-            if recommendations.increase_G_VGA or recommendations.decrease_G_VGA:
+            # Add VGA gain with current value
+            if has_vga_recommendation:
+                current_vga = output_dto.vga_gain if output_dto.vga_gain is not None else 0.0
                 if recommendations.increase_G_VGA:
-                    optimized_params_text += "\nVGA gain: Increase (adjust manually in GUI)\n"
+                    optimized_params_text += f"VGA gain: {current_vga:.1f} dB -> Increase (adjust manually in GUI)\n"
                 elif recommendations.decrease_G_VGA:
-                    optimized_params_text += "\nVGA gain: Decrease (adjust manually in GUI)\n"
+                    optimized_params_text += f"VGA gain: {current_vga:.1f} dB -> Decrease (adjust manually in GUI)\n"
             
             optimized_params_text += "\n"
         
@@ -161,6 +164,10 @@ When constraints are violated, the optimizer suggests parameter changes:
             current_params_text += f"Tp (pulse duration): {input_dto.signal.Tp:.2f} µs\n"
             current_params_text += f"f_start (start frequency): {input_dto.signal.f_start:.2f} Hz\n"
             current_params_text += f"f_end (end frequency): {input_dto.signal.f_end:.2f} Hz\n"
+            if output_dto.lna_gain is not None:
+                current_params_text += f"LNA gain: {output_dto.lna_gain:.1f} dB\n"
+            if output_dto.vga_gain is not None:
+                current_params_text += f"VGA gain: {output_dto.vga_gain:.1f} dB\n"
             current_params_text += f"Target SNR: {target_snr:.1f} dB\n"
             current_params_text += f"Measured SNR: {output_dto.SNR_ADC:.2f} dB\n"
             current_params_text += f"Range accuracy (σ_D): {output_dto.sigma_D:.4f} m\n"
