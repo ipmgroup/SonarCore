@@ -349,10 +349,10 @@ class MainWindow(QMainWindow):
         
         # Target SNR
         self.target_snr_spin = QDoubleSpinBox()
-        self.target_snr_spin.setRange(10, 60)
+        self.target_snr_spin.setRange(10, 40)  # Realistic range for hydroacoustic systems: 10-40 dB
         self.target_snr_spin.setValue(20.0)
         self.target_snr_spin.setSuffix(" dB")
-        self.target_snr_spin.setToolTip("Target SNR at receiver (considers attenuation)")
+        self.target_snr_spin.setToolTip("Target SNR at receiver (considers attenuation). Range: 10-40 dB")
         self.target_snr_spin.valueChanged.connect(self._save_gui_settings)
         optimization_layout.addRow("Target SNR:", self.target_snr_spin)
         
@@ -512,6 +512,12 @@ class MainWindow(QMainWindow):
         self.recommendations_text = QTextEdit()
         self.recommendations_text.setReadOnly(True)
         recommendations_layout.addWidget(self.recommendations_text)
+        
+        # Button to apply recommendations
+        self.apply_recommendations_button = QPushButton("Apply Recommendations")
+        self.apply_recommendations_button.setToolTip("Apply suggested parameter changes from optimizer")
+        self.apply_recommendations_button.clicked.connect(self._apply_recommendations)
+        recommendations_layout.addWidget(self.apply_recommendations_button)
         
         tabs.addTab(recommendations_tab, "Recommendations")
         
@@ -688,7 +694,15 @@ class MainWindow(QMainWindow):
                 tgt = settings['target']
                 if hasattr(self, 'target_snr_spin'):
                     self.target_snr_spin.blockSignals(True)
-                    self.target_snr_spin.setValue(tgt.get('target_snr', 20.0))
+                    target_snr_value = tgt.get('target_snr', 20.0)
+                    # Ensure value is within valid range [10, 40]
+                    if target_snr_value < 10:
+                        target_snr_value = 10.0
+                        self.logger.warning(f"Target SNR ({tgt.get('target_snr', 20.0)}) < 10. Adjusted to 10.0")
+                    elif target_snr_value > 40:
+                        target_snr_value = 40.0
+                        self.logger.warning(f"Target SNR ({tgt.get('target_snr', 20.0)}) > 40. Adjusted to 40.0")
+                    self.target_snr_spin.setValue(target_snr_value)
                     self.target_snr_spin.blockSignals(False)
                 if hasattr(self, 'target_sigma_spin'):
                     self.target_sigma_spin.blockSignals(True)
@@ -1539,6 +1553,13 @@ class MainWindow(QMainWindow):
             
             # Get target_snr from GUI
             target_snr = self.target_snr_spin.value() if hasattr(self, 'target_snr_spin') else 20.0
+            # Ensure value is within valid range [10, 40]
+            if target_snr < 10:
+                target_snr = 10.0
+                self.logger.warning(f"Target SNR ({self.target_snr_spin.value() if hasattr(self, 'target_snr_spin') else 20.0}) < 10. Using 10.0")
+            elif target_snr > 40:
+                target_snr = 40.0
+                self.logger.warning(f"Target SNR ({self.target_snr_spin.value() if hasattr(self, 'target_snr_spin') else 20.0}) > 40. Using 40.0")
             
             return InputDTO(
                 hardware=hardware,
@@ -1658,6 +1679,66 @@ Success: {'Yes' if output_dto.success else 'No'}
                 text += "No recommendations - all parameters are normal"
         
         self.recommendations_text.setPlainText(text)
+        
+        # Store last output_dto for applying recommendations
+        self.last_output_dto = output_dto
+    
+    def _apply_recommendations(self):
+        """Applies optimizer recommendations to GUI parameters."""
+        if not hasattr(self, 'last_output_dto') or not self.last_output_dto:
+            QMessageBox.warning(self, "No Recommendations", "No recommendations available. Run simulation first.")
+            return
+        
+        recommendations = self.last_output_dto.recommendations
+        if not recommendations or not recommendations.suggested_changes:
+            QMessageBox.information(self, "No Changes", "No parameter changes suggested. All parameters are optimal.")
+            return
+        
+        # Apply suggested changes
+        changes_applied = []
+        
+        if 'Tp' in recommendations.suggested_changes:
+            suggested_tp = recommendations.suggested_changes['Tp']
+            # Ensure within valid range
+            suggested_tp = max(self.Tp_spin.minimum(), min(suggested_tp, self.Tp_spin.maximum()))
+            self.Tp_spin.blockSignals(True)
+            self.Tp_spin.setValue(suggested_tp)
+            self.Tp_spin.blockSignals(False)
+            changes_applied.append(f"Tp: {suggested_tp:.2f} µs")
+        
+        if 'f_start' in recommendations.suggested_changes:
+            suggested_f_start = recommendations.suggested_changes['f_start']
+            # Ensure within valid range
+            suggested_f_start = max(self.f_start_spin.minimum(), min(suggested_f_start, self.f_start_spin.maximum()))
+            self.f_start_spin.blockSignals(True)
+            self.f_start_spin.setValue(suggested_f_start)
+            self.f_start_spin.blockSignals(False)
+            changes_applied.append(f"f_start: {suggested_f_start:.2f} Hz")
+        
+        if 'f_end' in recommendations.suggested_changes:
+            suggested_f_end = recommendations.suggested_changes['f_end']
+            # Ensure within valid range
+            suggested_f_end = max(self.f_end_spin.minimum(), min(suggested_f_end, self.f_end_spin.maximum()))
+            self.f_end_spin.blockSignals(True)
+            self.f_end_spin.setValue(suggested_f_end)
+            self.f_end_spin.blockSignals(False)
+            changes_applied.append(f"f_end: {suggested_f_end:.2f} Hz")
+        
+        # VGA gain changes need to be applied manually (user adjusts in Signal Path widget)
+        if recommendations.increase_G_VGA or recommendations.decrease_G_VGA:
+            if recommendations.increase_G_VGA:
+                changes_applied.append("VGA gain: Increase manually in Signal Path widget")
+            else:
+                changes_applied.append("VGA gain: Decrease manually in Signal Path widget")
+        
+        if changes_applied:
+            message = "Applied recommendations:\n" + "\n".join(f"  • {c}" for c in changes_applied)
+            QMessageBox.information(self, "Recommendations Applied", message)
+            self.logger.info(f"Applied recommendations: {changes_applied}")
+            # Trigger save
+            self._save_gui_settings()
+        else:
+            QMessageBox.information(self, "No Changes", "No applicable parameter changes.")
     
     def _plot_results(self, input_dto: InputDTO, output_dto: OutputDTO):
         """Plots graphs."""

@@ -84,10 +84,111 @@ When constraints are violated, the optimizer suggests parameter changes:
         # Check SNR (use target_snr from input_dto)
         if output_dto.SNR_ADC < target_snr:
             messages.append(f"SNR ({output_dto.SNR_ADC:.2f} dB) is below target ({target_snr:.2f} dB)")
-            # Increase VGA gain or pulse duration
-            recommendations.increase_G_VGA = True
-            recommendations.increase_Tp = True
-            recommendations_text += f"Increase VGA gain or Tp to improve SNR (target: {target_snr:.2f} dB). "
+            # Check if VGA is already at maximum
+            vga_at_max = False
+            if output_dto.vga_gain is not None and output_dto.vga_gain_max is not None:
+                # Consider VGA at max if within 1 dB of maximum (accounting for rounding)
+                vga_at_max = (output_dto.vga_gain_max - output_dto.vga_gain) < 1.0
+            
+            if vga_at_max:
+                # VGA is at maximum - need more aggressive Tp increase
+                recommendations.increase_Tp = True
+                recommendations.aggressive_Tp_increase = True  # Flag for more aggressive increase
+                recommendations_text += f"VGA gain is at maximum ({output_dto.vga_gain:.1f} dB). "
+                recommendations_text += f"Significantly increase Tp to improve SNR (target: {target_snr:.2f} dB). "
+                # Also suggest checking if target SNR is achievable
+                snr_deficit = target_snr - output_dto.SNR_ADC
+                if snr_deficit > 10:
+                    recommendations_text += f"WARNING: Large SNR deficit ({snr_deficit:.1f} dB). "
+                    recommendations_text += "Consider reducing target SNR or increasing distance may not be achievable. "
+            else:
+                # VGA can still be increased
+                # Calculate how much VGA gain increase is needed
+                snr_deficit = target_snr - output_dto.SNR_ADC
+                
+                # For large distances, be more aggressive
+                D_target = input_dto.range.D_target if input_dto.range.D_target is not None else (input_dto.range.D_min + input_dto.range.D_max) / 2
+                is_large_distance = D_target > 200.0  # Consider >200m as large distance
+                
+                # Check if Tp is at or near maximum (cannot be increased much)
+                Tp_at_max = input_dto.signal.Tp >= 4900.0  # Consider >=4900 µs as at maximum
+                
+                # Calculate suggested VGA gain increase
+                # VGA gain directly affects SNR (1 dB VGA = 1 dB SNR, approximately)
+                # But in practice, the relationship may not be 1:1 due to noise floor
+                # Use a more conservative estimate: 0.8-0.9 dB SNR per 1 dB VGA gain
+                vga_to_snr_ratio = 0.85  # Conservative estimate
+                
+                if Tp_at_max:
+                    # If Tp is at maximum, we need to compensate more through VGA gain
+                    # Calculate required VGA gain increase to cover the deficit
+                    # Required VGA increase = SNR deficit / vga_to_snr_ratio
+                    required_vga_increase = snr_deficit / vga_to_snr_ratio
+                    # Use up to 95% of available VGA range (leave some margin)
+                    available_vga_range = output_dto.vga_gain_max - output_dto.vga_gain if output_dto.vga_gain_max and output_dto.vga_gain else 100.0
+                    vga_gain_increase = min(required_vga_increase, available_vga_range * 0.95)
+                elif is_large_distance:
+                    # For large distances, use more VGA gain (up to 70% of deficit)
+                    vga_gain_increase = min(snr_deficit * 0.7 / vga_to_snr_ratio, output_dto.vga_gain_max - output_dto.vga_gain if output_dto.vga_gain_max else 20.0)
+                else:
+                    # For normal distances, use less VGA gain (up to 50% of deficit)
+                    vga_gain_increase = min(snr_deficit * 0.5 / vga_to_snr_ratio, output_dto.vga_gain_max - output_dto.vga_gain if output_dto.vga_gain_max else 20.0)
+                
+                # Round to reasonable step (e.g., 1 dB), but ensure at least 1 dB increase
+                vga_gain_increase = max(1.0, round(vga_gain_increase))
+                
+                # Store suggested VGA gain value
+                suggested_vga = None
+                if output_dto.vga_gain is not None and output_dto.vga_gain_max is not None:
+                    suggested_vga = min(output_dto.vga_gain + vga_gain_increase, output_dto.vga_gain_max)
+                    recommendations.suggested_vga_gain = suggested_vga
+                    
+                    # Check if we're suggesting maximum VGA gain
+                    vga_at_suggested_max = (output_dto.vga_gain_max - suggested_vga) < 1.0
+                    if vga_at_suggested_max and snr_deficit > 2.0:
+                        # If suggesting max VGA and still large deficit, warn about feasibility
+                        recommendations.warn_unachievable_snr = True
+                
+                recommendations.increase_G_VGA = True
+                
+                # Only suggest Tp increase if not at maximum
+                if not Tp_at_max:
+                    recommendations.increase_Tp = True
+                
+                # Build recommendation text
+                if Tp_at_max:
+                    # Tp is at maximum, focus on VGA gain
+                    if suggested_vga is not None:
+                        if suggested_vga >= output_dto.vga_gain_max - 1.0:
+                            recommendations_text += f"Tp is at maximum ({input_dto.signal.Tp:.0f} µs). "
+                            recommendations_text += f"Increase VGA gain to maximum ({suggested_vga:.1f} dB) to improve SNR (target: {target_snr:.2f} dB). "
+                            if is_large_distance:
+                                recommendations_text += f"WARNING: For large distance ({D_target:.0f} m), achieving target SNR may require maximum VGA gain. "
+                        else:
+                            # Estimate expected SNR after VGA gain increase
+                            estimated_snr_after = output_dto.SNR_ADC + (suggested_vga - output_dto.vga_gain) * vga_to_snr_ratio
+                            recommendations_text += f"Tp is at maximum ({input_dto.signal.Tp:.0f} µs). "
+                            recommendations_text += f"Significantly increase VGA gain (suggested: {suggested_vga:.1f} dB) to improve SNR (target: {target_snr:.2f} dB). "
+                            recommendations_text += f"Estimated SNR after change: {estimated_snr_after:.1f} dB. "
+                            if estimated_snr_after < target_snr * 0.9:  # Still below 90% of target
+                                if output_dto.vga_gain_max:
+                                    recommendations_text += f"May need to increase VGA gain further (up to {output_dto.vga_gain_max:.1f} dB max). "
+                                if recommendations.warn_unachievable_snr:
+                                    recommendations_text += f"WARNING: Target SNR ({target_snr:.1f} dB) may not be achievable even with maximum VGA gain. "
+                                    recommendations_text += f"Consider reducing target SNR or distance. "
+                    else:
+                        recommendations_text += f"Tp is at maximum ({input_dto.signal.Tp:.0f} µs). "
+                        recommendations_text += f"Significantly increase VGA gain to improve SNR (target: {target_snr:.2f} dB). "
+                elif is_large_distance:
+                    if suggested_vga is not None:
+                        recommendations_text += f"For large distance ({D_target:.0f} m), significantly increase VGA gain (suggested: {suggested_vga:.1f} dB) and Tp to improve SNR (target: {target_snr:.2f} dB). "
+                    else:
+                        recommendations_text += f"For large distance ({D_target:.0f} m), significantly increase VGA gain and Tp to improve SNR (target: {target_snr:.2f} dB). "
+                else:
+                    if suggested_vga is not None:
+                        recommendations_text += f"Increase VGA gain (suggested: {suggested_vga:.1f} dB) or Tp to improve SNR (target: {target_snr:.2f} dB). "
+                    else:
+                        recommendations_text += f"Increase VGA gain or Tp to improve SNR (target: {target_snr:.2f} dB). "
         
         # Check clipping
         if output_dto.clipping_flags:
@@ -113,6 +214,8 @@ When constraints are violated, the optimizer suggests parameter changes:
         
         # Calculate suggested parameter changes
         suggested_changes = self.suggest_parameter_changes(input_dto, recommendations)
+        # Store suggested changes in recommendations for GUI to apply
+        recommendations.suggested_changes = suggested_changes
         
         # Build optimized parameters section
         # Show section if there are suggested changes OR VGA gain recommendations
@@ -127,7 +230,13 @@ When constraints are violated, the optimizer suggests parameter changes:
                 current = input_dto.signal.Tp
                 suggested = suggested_changes['Tp']
                 change_pct = ((suggested - current) / current) * 100
-                optimized_params_text += f"Tp (pulse duration): {current:.2f} µs -> {suggested:.2f} µs ({change_pct:+.1f}%)\n"
+                if recommendations.aggressive_Tp_increase:
+                    optimized_params_text += f"Tp (pulse duration): {current:.2f} µs -> {suggested:.2f} µs ({change_pct:+.1f}% - AGGRESSIVE increase, VGA at max)\n"
+                else:
+                    optimized_params_text += f"Tp (pulse duration): {current:.2f} µs -> {suggested:.2f} µs ({change_pct:+.1f}%)\n"
+            elif recommendations.increase_Tp and input_dto.signal.Tp >= 4900.0:
+                # Tp is at maximum, cannot be increased
+                optimized_params_text += f"Tp (pulse duration): {input_dto.signal.Tp:.2f} µs (at maximum, cannot increase)\n"
             
             if 'f_start' in suggested_changes:
                 current = input_dto.signal.f_start
@@ -144,8 +253,17 @@ When constraints are violated, the optimizer suggests parameter changes:
             # Add VGA gain with current value
             if has_vga_recommendation:
                 current_vga = output_dto.vga_gain if output_dto.vga_gain is not None else 0.0
+                vga_max = output_dto.vga_gain_max if output_dto.vga_gain_max is not None else None
                 if recommendations.increase_G_VGA:
-                    optimized_params_text += f"VGA gain: {current_vga:.1f} dB -> Increase (adjust manually in GUI)\n"
+                    if vga_max is not None and (vga_max - current_vga) < 1.0:
+                        optimized_params_text += f"VGA gain: {current_vga:.1f} dB (MAX: {vga_max:.1f} dB) - Already at maximum!\n"
+                    elif recommendations.suggested_vga_gain is not None:
+                        # Show specific suggested value
+                        suggested_vga = recommendations.suggested_vga_gain
+                        change = suggested_vga - current_vga
+                        optimized_params_text += f"VGA gain: {current_vga:.1f} dB -> {suggested_vga:.1f} dB (+{change:.1f} dB)\n"
+                    else:
+                        optimized_params_text += f"VGA gain: {current_vga:.1f} dB -> Increase (adjust manually in GUI)\n"
                 elif recommendations.decrease_G_VGA:
                     optimized_params_text += f"VGA gain: {current_vga:.1f} dB -> Decrease (adjust manually in GUI)\n"
             
@@ -198,7 +316,35 @@ When constraints are violated, the optimizer suggests parameter changes:
         changes = {}
         
         if recommendations.increase_Tp:
-            changes['Tp'] = input_dto.signal.Tp * 1.2  # Increase by 20%
+            # Check if this is for large distance
+            D_target = input_dto.range.D_target if input_dto.range.D_target is not None else (input_dto.range.D_min + input_dto.range.D_max) / 2
+            is_large_distance = D_target > 200.0
+            
+            if recommendations.aggressive_Tp_increase:
+                # More aggressive increase when VGA is at maximum (50-100% increase)
+                # But limit to reasonable maximum (e.g., 5000 µs)
+                suggested_tp = min(input_dto.signal.Tp * 2.0, 5000.0)  # Double or max 5000 µs
+                # Don't suggest if already at or near maximum
+                if suggested_tp <= input_dto.signal.Tp:
+                    # Already at maximum, don't suggest increase
+                    pass
+                else:
+                    changes['Tp'] = suggested_tp
+            else:
+                if is_large_distance:
+                    # For large distances, more aggressive Tp increase (50% instead of 20%)
+                    suggested_tp = min(input_dto.signal.Tp * 1.5, 5000.0)
+                else:
+                    suggested_tp = input_dto.signal.Tp * 1.2  # Increase by 20%
+                
+                # Limit to maximum 5000 µs
+                if suggested_tp > 5000.0:
+                    # If current Tp is already at or near max, don't suggest increase
+                    if input_dto.signal.Tp < 4900.0:
+                        changes['Tp'] = 5000.0  # Suggest maximum
+                    # Otherwise, don't suggest (already at max)
+                else:
+                    changes['Tp'] = suggested_tp
         
         if recommendations.decrease_Tp:
             changes['Tp'] = input_dto.signal.Tp * 0.8  # Decrease by 20%

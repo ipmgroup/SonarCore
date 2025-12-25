@@ -83,23 +83,27 @@ class InputDTO(BaseModel):
     signal: SignalDTO
     environment: EnvironmentDTO
     range: RangeDTO
-    target_snr: Optional[float] = Field(default=20.0, ge=0, description="Target SNR at ADC output, dB")
+    target_snr: Optional[float] = Field(default=20.0, ge=10, le=40, description="Target SNR at ADC output, dB (range: 10-40)")
 
 
 class RecommendationsDTO(BaseModel):
     """Optimization recommendations."""
     increase_Tp: bool = False
     decrease_Tp: bool = False
+    aggressive_Tp_increase: bool = False  # Flag for more aggressive Tp increase when VGA is at max
     increase_f_start: bool = False
     decrease_f_start: bool = False
     increase_f_end: bool = False
     decrease_f_end: bool = False
     increase_G_VGA: bool = False
     decrease_G_VGA: bool = False
+    suggested_vga_gain: Optional[float] = Field(default=None, description="Suggested VGA gain value, dB")
+    warn_unachievable_snr: bool = False  # Warning flag if target SNR may be unachievable
     change_transducer: bool = False
     change_lna: bool = False
     change_adc: bool = False
     message: str = ""
+    suggested_changes: Dict = Field(default_factory=dict, description="Suggested parameter values (Tp, f_start, f_end)")
 
 
 class OutputDTO(BaseModel):
@@ -115,6 +119,7 @@ class OutputDTO(BaseModel):
     # Receiver gain values
     lna_gain: Optional[float] = Field(default=None, description="LNA gain used in simulation, dB")
     vga_gain: Optional[float] = Field(default=None, description="VGA gain used in simulation, dB")
+    vga_gain_max: Optional[float] = Field(default=None, description="VGA maximum gain, dB")
     # Signal data for visualization (stored as lists for JSON serialization)
     tx_signal: Optional[List[float]] = Field(default=None, description="Transmitted signal (after TX transducer)")
     signal_at_bottom: Optional[List[float]] = Field(default=None, description="Signal at bottom (after channel, before reflection)")
