@@ -1,0 +1,16 @@
+{
+  "model": "Example Transducer 200kHz",
+  "f_min": 150000,
+  "f_max": 250000,
+  "f_0": 200000,
+  "B_tr": 100000,
+  "S_TX": 180,
+  "S_RX": -180,
+  "Theta_BW": 15,
+  "Q": 5,
+  "T_rd": 10,
+  "Z": 50,
+  "source": "Example",
+  "version": "1.0"
+}
+

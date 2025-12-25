@@ -1,0 +1,33 @@
+{
+  "signal": {
+    "f_start": 206163.82,
+    "f_end": 213836.18,
+    "Tp": 521.35,
+    "window": "Hann",
+    "sample_rate": 2000000.0
+  },
+  "environment": {
+    "T": 25.0,
+    "S": 35.0,
+    "z": 100.0,
+    "bottom_reflection": -15.0
+  },
+  "range": {
+    "D_min": 0.5,
+    "D_max": 100.0,
+    "D_target": 100.0
+  },
+  "target": {
+    "target_snr": 10.0,
+    "target_sigma": 0.01
+  },
+  "hardware": {
+    "transducer_id": "390_210",
+    "lna_id": "OPA392",
+    "vga_id": "LTC6910",
+    "adc_id": "AD7091"
+  },
+  "options": {
+    "link_depth_to_range": true
+  }
+}
