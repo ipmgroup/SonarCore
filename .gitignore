@@ -28,3 +28,6 @@ logs/
 .idea/
 # VS Code settings можно коммитить, но не пользовательские настройки
 .vscode/settings.json.user
+
+# GUI settings - user-specific configuration file
+gui.json
