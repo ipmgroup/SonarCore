@@ -502,16 +502,29 @@ class SignalCalculator:
                                      f_start: float, f_end: float,
                                      tx_voltage: float = 100.0) -> float:
         """
-        Calculates optimal pulse duration to achieve target SNR considering attenuation.
+        Calculates optimal pulse duration to achieve target SNR using active sonar equation.
         
-        SNR depends on:
-        - Signal energy (proportional to Tp)
-        - Transmission loss (spreading + absorption)
-        - Receiver gain (S_RX + LNA + VGA)
-        - Noise level
+        Uses the active sonar equation:
+        SNR = SL + TS + DI - NL - 2TL + 10*log10(BT)
         
-        Formula: SNR = Signal_power - Noise_power - Transmission_loss + RX_gain
-        Signal energy ∝ Tp, so longer Tp → better SNR
+        where:
+        - SL = Source Level (transmitted signal level at 1m) = S_TX + 20*log10(V)
+        - TS = Target Strength (reflection coefficient, positive for bottom)
+        - DI = Directivity Index (assumed 0 for omnidirectional)
+        - NL = Noise Level (ambient + receiver noise, positive dB)
+        - TL = Transmission Loss (one-way path loss) = spreading + absorption
+        - 2TL = round-trip path loss
+        - BT = bandwidth * time (pulse compression product)
+        - 10*log10(BT) = pulse compression gain
+        
+        For CHIRP signals, pulse compression gain is: 10*log10(BT)
+        where B = bandwidth (Hz), T = pulse duration (seconds).
+        
+        Rearranging to find Tp:
+        10*log10(BT) = SNR_target - (SL + TS + DI - NL - 2TL)
+        BT = 10^((SNR_target - (SL + TS + DI - NL - 2TL)) / 10)
+        T = BT / B
+        Tp = (BT / B) * 1e6  (convert to microseconds)
         
         Args:
             D_target: Target range, m
@@ -528,7 +541,7 @@ class SignalCalculator:
         Returns:
             Optimal pulse duration, µs
         """
-        # Calculate sound speed
+        # Calculate sound speed for maximum Tp limit
         P = self.water_model.calculate_pressure(z)
         c = self.water_model.calculate_sound_speed(T, S, P)
         
@@ -538,63 +551,99 @@ class SignalCalculator:
         
         # Get parameters
         S_TX = transducer_params.get('S_TX', 170)  # dB re 1µPa/V @ 1m
-        S_RX = transducer_params.get('S_RX', -193)  # dB re 1V/µPa
-        lna_gain = hardware_params.get('lna_gain', 20)  # dB
-        vga_gain = hardware_params.get('vga_gain', 30)  # dB
-        bottom_reflection = hardware_params.get('bottom_reflection', -15)  # dB
+        bottom_reflection = hardware_params.get('bottom_reflection', -15)  # dB (reflection loss, negative)
         
-        # Calculate transmission loss for round trip
+        # Calculate bandwidth
+        bandwidth = abs(f_end - f_start)  # Hz
         f_center = (f_start + f_end) / 2
-        spreading_loss = self.water_model.calculate_spreading_loss(D_target) * 2  # Round trip
-        absorption_loss = self.water_model.calculate_absorption_loss(D_target, f_center, T, S, z) * 2  # Round trip
-        total_path_loss = spreading_loss + absorption_loss + bottom_reflection
         
-        # Calculate total RX gain
-        total_rx_gain = S_RX + lna_gain + vga_gain
+        # === ACTIVE SONAR EQUATION ===
+        # SNR = SL + TS + DI - NL - 2TL + 10*log10(BT)
+        # where:
+        # SL = Source Level (transmitted signal level at 1m)
+        # TS = Target Strength (reflection coefficient, positive for bottom reflection)
+        # DI = Directivity Index (assumed 0 for omnidirectional)
+        # NL = Noise Level (ambient + receiver noise)
+        # TL = Transmission Loss (one-way path loss)
+        # 2TL = round-trip path loss
+        # BT = bandwidth * time (pulse compression product)
+        # 10*log10(BT) = pulse compression gain
         
-        # Calculate TX signal level
-        tx_spl_db = S_TX + 20 * np.log10(tx_voltage)  # dB re 1µPa @ 1m
+        # 1. Source Level (SL)
+        # SL = S_TX + 20*log10(V) where S_TX is sensitivity, V is voltage
+        SL = S_TX + 20 * np.log10(tx_voltage)  # dB re 1µPa @ 1m
         
-        # Signal level at receiver (before noise)
-        signal_level_db = tx_spl_db - total_path_loss + total_rx_gain
+        # 2. Target Strength (TS)
+        # For bottom reflection, TS is the reflection coefficient
+        # bottom_reflection is negative (loss), so TS = -bottom_reflection (positive)
+        TS = -bottom_reflection  # dB (target strength, positive)
         
-        # For CHIRP signals, SNR improvement is approximately 10*log10(Tp * BW)
-        # where BW is the CHIRP bandwidth
-        bandwidth = abs(f_end - f_start)
+        # 3. Directivity Index (DI)
+        # Assumed 0 for omnidirectional transducer
+        DI = 0.0  # dB
         
-        # Estimate noise level (typical thermal noise + receiver noise)
-        # Typical noise floor: -120 to -140 dB re 1µPa (depends on bandwidth)
-        # Simplified: noise_floor ≈ -130 dB + 10*log10(BW/1kHz)
-        noise_floor_db = -130 + 10 * np.log10(bandwidth / 1000.0) if bandwidth > 0 else -130
+        # 4. Noise Level (NL)
+        # In sonar equation, NL is the noise level in dB re 1µPa
+        # For hydroacoustic systems, noise includes:
+        # - Ambient ocean noise (dominant, frequency-dependent)
+        # - Thermal noise (significant at high frequencies)
+        # - Receiver noise (LNA noise figure)
+        #
+        # Typical ambient noise levels (spectrum level at 1kHz):
+        # - Sea state 0 (calm): ~120-130 dB re 1µPa @ 1kHz
+        # - Sea state 3 (moderate): ~110-120 dB re 1µPa @ 1kHz
+        # Note: In sonar equation, NL is typically given as positive dB
+        # For 160 kHz band, ambient noise is lower than at low frequencies
+        # Use conservative estimate: 115-125 dB re 1µPa @ 1kHz for 160 kHz band
+        base_noise_spectrum_level_db = 120.0  # dB re 1µPa @ 1kHz (spectrum level)
         
-        # Current SNR (without Tp contribution)
-        # SNR = Signal - Noise + Processing_gain
-        # Processing gain for CHIRP ≈ 10*log10(Tp * BW)
-        # We need: SNR_current + 10*log10(Tp * BW) >= target_snr_db
+        # Adjust for bandwidth: noise power increases with bandwidth
+        # NL = NL_spectrum + 10*log10(BW/1kHz)
+        bandwidth_khz = bandwidth / 1000.0 if bandwidth > 0 else 1.0
+        NL = base_noise_spectrum_level_db + 10 * np.log10(bandwidth_khz)
         
-        # Estimate current SNR (for reference Tp = 1 ms)
-        Tp_ref_us = 1000.0  # Reference: 1 ms
-        Tp_ref_sec = Tp_ref_us * 1e-6
-        processing_gain_ref_db = 10 * np.log10(Tp_ref_sec * bandwidth) if bandwidth > 0 else 0
-        snr_ref_db = signal_level_db - noise_floor_db + processing_gain_ref_db
+        # Add small contribution from LNA noise figure
+        lna_nf = hardware_params.get('lna_nf', 2.0)  # dB
+        if lna_nf > 1.0:
+            NL += (lna_nf - 1.0) * 0.2  # Small contribution
         
-        # Calculate required processing gain
-        required_processing_gain_db = target_snr_db - snr_ref_db
+        # 5. Transmission Loss (TL) - one-way
+        # TL = Spreading Loss + Absorption Loss
+        spreading_loss_one_way = self.water_model.calculate_spreading_loss(D_target)  # One-way
+        absorption_loss_one_way = self.water_model.calculate_absorption_loss(D_target, f_center, T, S, z)  # One-way
+        TL = spreading_loss_one_way + absorption_loss_one_way  # One-way TL
         
-        # Processing gain = 10*log10(Tp * BW)
-        # Therefore: Tp = 10^(required_gain/10) / BW
-        if required_processing_gain_db > 0 and bandwidth > 0:
-            Tp_required_sec = (10 ** (required_processing_gain_db / 10.0)) / bandwidth
+        # 6. Pulse Compression Gain: 10*log10(BT)
+        # where B = bandwidth (Hz), T = pulse duration (seconds)
+        # BT = bandwidth * Tp (product)
+        
+        # === CALCULATE REQUIRED Tp ===
+        # From sonar equation: SNR = SL + TS + DI - NL - 2TL + 10*log10(BT)
+        # Rearranging to find BT:
+        # 10*log10(BT) = SNR_target - (SL + TS + DI - NL - 2TL)
+        # BT = 10^((SNR_target - (SL + TS + DI - NL - 2TL)) / 10)
+        # T = BT / B
+        # Tp = (BT / B) * 1e6  (convert to microseconds)
+        
+        # Calculate required pulse compression product (BT)
+        required_PG_db = target_snr_db - (SL + TS + DI - NL - 2*TL)
+        
+        # Calculate required Tp from BT product
+        if bandwidth > 0:
+            # BT = 10^(PG / 10)
+            BT_product = 10 ** (required_PG_db / 10.0)
+            # T = BT / B
+            Tp_required_sec = BT_product / bandwidth
             Tp_required_us = Tp_required_sec * 1e6
         else:
-            # If SNR is already sufficient, use minimum reasonable Tp
+            # Fallback if bandwidth is 0
             Tp_required_us = 100.0
         
-        # Use maximum of required Tp and minimum Tp, but not more than maximum allowed
-        Tp_optimal_us = max(100.0, min(Tp_required_us, Tp_max_us))
-        
-        # Limit to reasonable range
-        Tp_optimal_us = max(50.0, min(Tp_optimal_us, 5000.0))
+        # Apply constraints
+        # 1. Minimum Tp: 100 µs (reasonable minimum)
+        # 2. Maximum Tp: 80% of round-trip time or 5000 µs, whichever is smaller
+        Tp_max_constrained = min(Tp_max_us, 5000.0)
+        Tp_optimal_us = max(100.0, min(Tp_required_us, Tp_max_constrained))
         
         return Tp_optimal_us
 

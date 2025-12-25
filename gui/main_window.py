@@ -1323,6 +1323,7 @@ class MainWindow(QMainWindow):
             hardware_params = {
                 'lna_gain': lna_params.get('G_LNA', lna_params.get('G', 20)),
                 'vga_gain': vga_params.get('G', 30),
+                'lna_nf': lna_params.get('NF_LNA', lna_params.get('NF', 2.0)),
                 'bottom_reflection': bottom_reflection
             }
             

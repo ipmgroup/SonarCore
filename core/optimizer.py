@@ -217,6 +217,7 @@ When constraints are violated, the optimizer suggests parameter changes:
             recommendations_text += "Increase Tp to improve accuracy. "
         
         # Check SNR (warning, not error - target not met but simulation succeeded)
+        # Case 1: SNR is below target - need to increase Tp or VGA gain
         if output_dto.SNR_ADC < target_snr:
             warnings.append(f"SNR ({output_dto.SNR_ADC:.2f} dB) is below target ({target_snr:.2f} dB)")
             # Check if VGA is already at maximum
@@ -325,6 +326,76 @@ When constraints are violated, the optimizer suggests parameter changes:
                     else:
                         recommendations_text += f"Increase VGA gain or Tp to improve SNR (target: {target_snr:.2f} dB). "
         
+        # Case 2: SNR is above target - can reduce Tp to achieve target SNR
+        elif output_dto.SNR_ADC > target_snr * 1.1:  # Only suggest if significantly above (10% margin)
+            snr_excess = output_dto.SNR_ADC - target_snr
+            warnings.append(f"SNR ({output_dto.SNR_ADC:.2f} dB) is above target ({target_snr:.2f} dB) by {snr_excess:.2f} dB")
+            
+            # Calculate optimal Tp using sonar equation
+            D_target = input_dto.range.D_target if input_dto.range.D_target is not None else (input_dto.range.D_min + input_dto.range.D_max) / 2
+            
+            # Try to calculate optimal Tp using SignalCalculator
+            optimal_tp = None
+            try:
+                from core.signal_calculator import SignalCalculator
+                calculator = SignalCalculator()
+                
+                # Get transducer parameters
+                transducer_params = None
+                if self.data_provider:
+                    transducer_params = self.data_provider.get_transducer(input_dto.hardware.transducer_id)
+                
+                if transducer_params:
+                    # Get hardware parameters
+                    lna_params = None
+                    vga_params = None
+                    if self.data_provider:
+                        try:
+                            lna_params = self.data_provider.get_lna(input_dto.hardware.lna_id)
+                        except:
+                            pass
+                        try:
+                            vga_params = self.data_provider.get_vga(input_dto.hardware.vga_id)
+                        except:
+                            pass
+                    
+                    hardware_params = {
+                        'lna_gain': lna_params.get('G_LNA', lna_params.get('G', 20)) if lna_params else 20.0,
+                        'vga_gain': vga_params.get('G', 30) if vga_params else 30.0,
+                        'lna_nf': lna_params.get('NF_LNA', lna_params.get('NF', 2.0)) if lna_params else 2.0,
+                        'bottom_reflection': input_dto.environment.bottom_reflection
+                    }
+                    
+                    # Get TX voltage
+                    tx_voltage = transducer_params.get('V_max', transducer_params.get('V_nominal', 100.0))
+                    
+                    # Calculate optimal Tp
+                    optimal_tp = calculator.calculate_optimal_tp_for_snr(
+                        D_target=D_target,
+                        target_snr_db=target_snr,
+                        transducer_params=transducer_params,
+                        hardware_params=hardware_params,
+                        T=input_dto.environment.T,
+                        S=input_dto.environment.S,
+                        z=input_dto.environment.z,
+                        f_start=input_dto.signal.f_start,
+                        f_end=input_dto.signal.f_end,
+                        tx_voltage=tx_voltage
+                    )
+            except Exception as e:
+                # If calculation fails, use simple heuristic
+                # SNR scales with 10*log10(Tp), so to reduce SNR by X dB, reduce Tp by factor 10^(-X/10)
+                snr_reduction_needed = snr_excess
+                tp_reduction_factor = 10 ** (-snr_reduction_needed / 10.0)
+                optimal_tp = max(100.0, input_dto.signal.Tp * tp_reduction_factor)
+            
+            if optimal_tp is not None and optimal_tp < input_dto.signal.Tp:
+                recommendations.decrease_Tp = True
+                # Store optimal Tp for use in suggest_parameter_changes
+                recommendations._optimal_tp_for_snr = optimal_tp
+                recommendations_text += f"SNR ({output_dto.SNR_ADC:.2f} dB) is above target ({target_snr:.2f} dB). "
+                recommendations_text += f"Reduce Tp to {optimal_tp:.1f} µs (from {input_dto.signal.Tp:.1f} µs) to achieve target SNR. "
+        
         # Check clipping (error - critical problem)
         if output_dto.clipping_flags:
             errors.append("ADC clipping detected")
@@ -353,6 +424,11 @@ When constraints are violated, the optimizer suggests parameter changes:
         
         # Calculate suggested parameter changes
         suggested_changes = self.suggest_parameter_changes(input_dto, recommendations)
+        
+        # If we calculated optimal Tp for SNR reduction, use it instead of heuristic
+        if recommendations.decrease_Tp and hasattr(recommendations, '_optimal_tp_for_snr'):
+            suggested_changes['Tp'] = recommendations._optimal_tp_for_snr
+        
         # Store suggested changes in recommendations for GUI to apply
         recommendations.suggested_changes = suggested_changes
         
@@ -514,7 +590,11 @@ When constraints are violated, the optimizer suggests parameter changes:
                     changes['Tp'] = suggested_tp
         
         if recommendations.decrease_Tp:
-            changes['Tp'] = input_dto.signal.Tp * 0.8  # Decrease by 20%
+            # Use calculated optimal Tp if available, otherwise use heuristic (20% decrease)
+            if hasattr(recommendations, '_optimal_tp_for_snr') and recommendations._optimal_tp_for_snr is not None:
+                changes['Tp'] = recommendations._optimal_tp_for_snr
+            else:
+                changes['Tp'] = input_dto.signal.Tp * 0.8  # Decrease by 20%
         
         if recommendations.increase_f_start:
             changes['f_start'] = input_dto.signal.f_start * 1.1

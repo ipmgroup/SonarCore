@@ -152,8 +152,14 @@ class ChannelModel:
             # Calculate instantaneous frequency for each time sample
             f_inst = SignalModel.get_instantaneous_frequency(t, f_start, f_end, Tp)
             
+            # Pre-calculate pressure (same for all frequencies, depends only on z)
+            # This avoids recalculating it in the loop inside calculate_absorption_loss
+            P = self.water_model.calculate_pressure(z)
+            
             # Calculate absorption loss for each frequency (absorption depends on frequency)
             # Vectorized calculation
+            # Note: calculate_absorption_loss will still calculate pressure internally,
+            # but we could optimize further by calling calculate_attenuation directly
             absorption_loss_array = np.array([self.water_model.calculate_absorption_loss(
                 distance_for_loss, f, T, S, z) for f in f_inst])
             
