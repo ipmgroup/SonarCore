@@ -127,4 +127,7 @@ class OutputDTO(BaseModel):
     signal_after_lna: Optional[List[float]] = Field(default=None, description="Signal after LNA (before VGA)")
     signal_after_vga: Optional[List[float]] = Field(default=None, description="Signal after VGA (before ADC)")
     time_axis: Optional[List[float]] = Field(default=None, description="Time axis for signals, seconds")
+    # Signal attenuation values (calculated in Core for visualization)
+    attenuation_at_bottom_db: Optional[float] = Field(default=None, description="Signal attenuation at bottom relative to TX, dB (calculated in Core)")
+    attenuation_received_db: Optional[float] = Field(default=None, description="Signal attenuation at receiver relative to TX, dB (calculated in Core)")
 

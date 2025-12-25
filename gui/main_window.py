@@ -1966,23 +1966,19 @@ Success: {'Yes' if output_dto.success else 'No'}
                 self.signals_plot_tx.addItem(pg.TextItem(f'Invalid TX signal data\nlen(t)={len(t)}, len(signal)={len(tx_signal)}', 
                                                          anchor=(0.5, 0.5)))
             
-            # Calculate reference amplitude (max amplitude of original signal)
-            reference_max = np.max(np.abs(tx_signal)) if len(tx_signal) > 0 else 1.0
-            epsilon = 1e-10
-            
             # Plot 2: Signal after water forward
             # Use same time axis as graph 1 (no delay for visualization)
             # Display original signal values (no conversions)
+            # All calculations done in Core - use values from OutputDTO
             if len(t) == len(signal_at_bottom) and len(signal_at_bottom) > 0:
                 t_ms = t * 1000  # Convert to milliseconds (same as graph 1)
                 # Check for valid data
                 if np.any(np.isfinite(signal_at_bottom)) and np.any(np.isfinite(t_ms)):
                     self.signals_plot_bottom.plot(t_ms, signal_at_bottom, pen=pg.mkPen('g', width=2))
                     
-                    # Calculate attenuation in dB
-                    signal_max = np.max(np.abs(signal_at_bottom))
-                    if signal_max > epsilon and reference_max > epsilon:
-                        attenuation_db = 20 * np.log10(signal_max / reference_max)
+                    # Use attenuation value calculated in Core (from OutputDTO)
+                    if output_dto.attenuation_at_bottom_db is not None:
+                        attenuation_db = output_dto.attenuation_at_bottom_db
                         # Only show text if attenuation is significant (not zero)
                         if abs(attenuation_db) > 0.1:  # More than 0.1 dB
                             # Add text label with attenuation info (no white background)
@@ -2028,16 +2024,16 @@ Success: {'Yes' if output_dto.success else 'No'}
             # Plot 3: Signal after water backward
             # Use same time axis as graph 1 (no delay for visualization)
             # Display original signal values (no conversions)
+            # All calculations done in Core - use values from OutputDTO
             if len(t) == len(received_signal) and len(received_signal) > 0:
                 t_ms = t * 1000  # Convert to milliseconds (same as graph 1)
                 # Check for valid data
                 if np.any(np.isfinite(received_signal)) and np.any(np.isfinite(t_ms)):
                     self.signals_plot_rx.plot(t_ms, received_signal, pen=pg.mkPen('r', width=2))
                     
-                    # Calculate attenuation in dB
-                    signal_max = np.max(np.abs(received_signal))
-                    if signal_max > epsilon and reference_max > epsilon:
-                        attenuation_db = 20 * np.log10(signal_max / reference_max)
+                    # Use attenuation value calculated in Core (from OutputDTO)
+                    if output_dto.attenuation_received_db is not None:
+                        attenuation_db = output_dto.attenuation_received_db
                         # Only show text if attenuation is significant (not zero)
                         if abs(attenuation_db) > 0.1:  # More than 0.1 dB
                             # Add text label with attenuation info (no white background)

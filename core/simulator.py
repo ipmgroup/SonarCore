@@ -37,7 +37,7 @@ class Simulator:
         """
         self.data_provider = data_provider
         self.water_model = WaterModel()
-        self.optimizer = Optimizer()
+        self.optimizer = Optimizer(data_provider)  # Pass data_provider to optimizer
         
         # Setup logging
         self.logger = logging.getLogger(__name__)
@@ -365,6 +365,23 @@ class Simulator:
             else:
                 signal_after_vga_vis = signal_after_vga
             
+            # Calculate signal attenuation values (all calculations in Core)
+            # Attenuation at bottom (relative to TX signal)
+            reference_max = np.max(np.abs(reference_signal_vis)) if len(reference_signal_vis) > 0 else 1.0
+            epsilon = 1e-10
+            attenuation_at_bottom_db = None
+            if len(signal_after_water_forward) > 0:
+                signal_max_bottom = np.max(np.abs(signal_after_water_forward))
+                if signal_max_bottom > epsilon and reference_max > epsilon:
+                    attenuation_at_bottom_db = 20 * np.log10(signal_max_bottom / reference_max)
+            
+            # Attenuation at receiver (relative to TX signal)
+            attenuation_received_db = None
+            if len(signal_after_water_backward) > 0:
+                signal_max_received = np.max(np.abs(signal_after_water_backward))
+                if signal_max_received > epsilon and reference_max > epsilon:
+                    attenuation_received_db = 20 * np.log10(signal_max_received / reference_max)
+            
             # Convert numpy arrays to lists for JSON serialization
             output_dto = OutputDTO(
                 D_measured=D_measured,
@@ -379,7 +396,9 @@ class Simulator:
                 received_signal=signal_after_water_backward.tolist() if len(signal_after_water_backward) > 0 else None,  # Stage 3: After water backward
                 signal_after_lna=signal_after_lna_vis.tolist() if len(signal_after_lna_vis) > 0 else None,  # Stage 4: After LNA (resampled)
                 signal_after_vga=signal_after_vga_vis.tolist() if len(signal_after_vga_vis) > 0 else None,  # Stage 5: After VGA (resampled)
-                time_axis=t_ref_vis.tolist() if len(t_ref_vis) > 0 else None  # Visualization time axis
+                time_axis=t_ref_vis.tolist() if len(t_ref_vis) > 0 else None,  # Visualization time axis
+                attenuation_at_bottom_db=attenuation_at_bottom_db,  # Calculated in Core
+                attenuation_received_db=attenuation_received_db  # Calculated in Core
             )
             
             # Analyze results and generate recommendations
