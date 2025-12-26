@@ -516,7 +516,7 @@ When constraints are violated, the optimizer suggests parameter changes:
             if output_dto.vga_gain is not None:
                 current_params_text += f"VGA gain: {output_dto.vga_gain:.1f} dB\n"
             current_params_text += f"Target SNR: {target_snr:.1f} dB\n"
-            current_params_text += f"Measured SNR: {output_dto.SNR_ADC:.2f} dB\n"
+            current_params_text += f"Measured SNR: {output_dto.SNR_ADC:.2f} dB (at ADC OUTPUT, after quantization)\n"
             current_params_text += f"Range accuracy (σ_D): {output_dto.sigma_D:.4f} m\n"
             current_params_text += f"Measured range: {output_dto.D_measured:.2f} m\n"
             

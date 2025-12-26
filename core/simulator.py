@@ -15,6 +15,7 @@ from .receiver_model import ReceiverModel
 from .dsp_model import DSPModel
 from .range_estimator import RangeEstimator
 from .optimizer import Optimizer
+from .enob_calculator import ENOBCalculator
 
 
 class Simulator:
@@ -404,6 +405,57 @@ class Simulator:
             # Analyze results and generate recommendations
             recommendations = self.optimizer.analyze_results(input_dto, output_dto)
             output_dto.recommendations = recommendations
+            
+            # Calculate ENOB with parameters AFTER optimization
+            # Use recommended values if available, otherwise use current values
+            #
+            # NOTE: ENOB calculation uses Analog SNR measured at VGA OUTPUT (before ADC).
+            # This is different from SNR_ADC (Measured SNR) which is measured at ADC OUTPUT (after quantization).
+            # See enob_calculator.py and receiver_model.py for detailed explanations of the differences.
+            enob_calculator = ENOBCalculator()
+            enob_results = None
+            
+            try:
+                # Get parameters AFTER optimization
+                if recommendations.suggested_changes:
+                    # Use recommended values
+                    optimized_tp = recommendations.suggested_changes.get('Tp', input_dto.signal.Tp)
+                    optimized_f_start = recommendations.suggested_changes.get('f_start', input_dto.signal.f_start)
+                    optimized_f_end = recommendations.suggested_changes.get('f_end', input_dto.signal.f_end)
+                else:
+                    # Use current values
+                    optimized_tp = input_dto.signal.Tp
+                    optimized_f_start = input_dto.signal.f_start
+                    optimized_f_end = input_dto.signal.f_end
+                
+                # VGA gain from simulation (after optimization)
+                vga_gain_used = receiver.current_G_VGA
+                
+                # Calculate signal RMS (use the signal from simulation)
+                if len(received_signal) > 0:
+                    signal_rms = np.sqrt(np.mean(received_signal ** 2))
+                    
+                    # Calculate bandwidth with optimized frequencies
+                    bandwidth = SignalModel.get_bandwidth(optimized_f_start, optimized_f_end)
+                    chirp_duration = optimized_tp * 1e-6  # Convert from µs to seconds
+                    
+                    # Calculate ENOB with optimized parameters
+                    enob_results = enob_calculator.calculate_enob(
+                        signal_input_voltage=signal_rms,
+                        bandwidth=bandwidth,
+                        lna_params=lna_params,
+                        vga_params=vga_params,
+                        adc_params=adc_params,
+                        vga_gain=vga_gain_used,
+                        chirp_duration=chirp_duration,
+                        sample_rate=adc_fs
+                    )
+                    
+            except Exception as e:
+                self.logger.warning(f"ENOB calculation failed: {e}", exc_info=True)
+            
+            # Update output_dto with ENOB results
+            output_dto.enob_results = enob_results
             
             self.logger.info(f"Simulation results: D={D_measured:.2f} m, σ_D={sigma_D:.4f} m, SNR={snr_adc:.2f} dB")
             

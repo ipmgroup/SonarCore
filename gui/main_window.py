@@ -30,6 +30,7 @@ from core.dto import InputDTO, OutputDTO
 from core.simulator import Simulator
 from core.signal_calculator import SignalCalculator
 from core.signal_path import SignalPathCalculator
+from core.enob_calculator import ENOBCalculator
 from data.data_provider import DataProvider
 
 
@@ -520,6 +521,17 @@ class MainWindow(QMainWindow):
         recommendations_layout.addWidget(self.apply_recommendations_button)
         
         tabs.addTab(recommendations_tab, "Recommendations")
+        
+        # ENOB tab
+        enob_tab = QWidget()
+        enob_layout = QVBoxLayout(enob_tab)
+        
+        self.enob_text = QTextEdit()
+        self.enob_text.setReadOnly(True)
+        self.enob_text.setFontFamily("Courier")
+        enob_layout.addWidget(self.enob_text)
+        
+        tabs.addTab(enob_tab, "ENOB")
         
         layout.addWidget(tabs)
         
@@ -1604,6 +1616,7 @@ class MainWindow(QMainWindow):
         # Display results
         self._display_results(input_dto, output_dto)
         self._display_recommendations(output_dto)
+        self._display_enob(output_dto)
         self._display_signals(input_dto, output_dto)
         self._plot_results(input_dto, output_dto)
         self._display_signal_path(input_dto)
@@ -1683,6 +1696,17 @@ Success: {'Yes' if output_dto.success else 'No'}
         
         # Store last output_dto for applying recommendations
         self.last_output_dto = output_dto
+    
+    def _display_enob(self, output_dto: OutputDTO):
+        """Displays ENOB calculation results."""
+        if output_dto.enob_results is None:
+            self.enob_text.setPlainText("ENOB calculation not available.\nRun simulation to calculate ENOB.")
+            return
+        
+        # Format ENOB report using ENOBCalculator
+        enob_calculator = ENOBCalculator()
+        text = enob_calculator.format_enob_report(output_dto.enob_results)
+        self.enob_text.setPlainText(text)
     
     def _apply_recommendations(self):
         """Applies optimizer recommendations to GUI parameters."""

@@ -71,6 +71,11 @@ class ReceiverModel:
         
         Returns:
             Tuple (digital signal, SNR_ADC, clipping flag, signal_after_lna, signal_after_vga)
+            
+        Note:
+            SNR_ADC is measured at ADC OUTPUT (after quantization).
+            This is the "Measured SNR" shown in simulation results.
+            See enob_calculator.py for Analog SNR measured at VGA OUTPUT.
         """
         # LNA
         G_LNA_linear = 10 ** (self.G_LNA / 20)
@@ -105,6 +110,19 @@ class ReceiverModel:
         clipping_adc = np.any(np.abs(signal_vga) > self.V_FS/2)
         
         # Calculate SNR at ADC output
+        # NOTE: SNR_ADC is measured at ADC OUTPUT (after quantization)
+        # This is different from Analog SNR in enob_calculator.py which is measured
+        # at VGA OUTPUT (before ADC quantization).
+        #
+        # Differences:
+        # 1. Measurement point: ADC output (digital, after quantization) vs VGA output (analog)
+        # 2. Noise model: thermal noise (k_B*T*BW*(10^(NF/10)-1)) vs input_noise (e_n * sqrt(BW))
+        # 3. ADC quantization: INCLUDED in SNR_ADC, NOT included in Analog SNR
+        # 4. Signal power: mean(signal_quantized^2) (after quantization) vs signal_output_v (analog)
+        #
+        # Typical difference: SNR_ADC is usually higher than Analog SNR because:
+        # - ADC quantization noise may be smaller than analog noise for well-designed systems
+        # - Quantization can sometimes improve SNR if signal is close to full scale
         signal_power = np.mean(signal_quantized**2)
         noise_power_adc = (self.V_FS / L)**2 / 12  # Quantization noise
         if add_noise:

@@ -130,4 +130,6 @@ class OutputDTO(BaseModel):
     # Signal attenuation values (calculated in Core for visualization)
     attenuation_at_bottom_db: Optional[float] = Field(default=None, description="Signal attenuation at bottom relative to TX, dB (calculated in Core)")
     attenuation_received_db: Optional[float] = Field(default=None, description="Signal attenuation at receiver relative to TX, dB (calculated in Core)")
+    # ENOB calculation results (calculated AFTER optimization with recommended parameters)
+    enob_results: Optional[Dict[str, Any]] = Field(default=None, description="ENOB calculation results dictionary")
 
