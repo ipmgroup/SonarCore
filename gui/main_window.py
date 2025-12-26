@@ -121,7 +121,7 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(right_panel, 1)
         
         # Right panel - signal path
-        from .signal_path_widget import SignalPathWidget
+        from gui.signal_path_widget import SignalPathWidget
         self.signal_path_widget = SignalPathWidget()
         self.signal_path_widget.lna_gain_changed.connect(self._on_signal_path_param_changed)
         self.signal_path_widget.lna_nf_changed.connect(self._on_signal_path_param_changed)
@@ -210,12 +210,26 @@ class MainWindow(QMainWindow):
         signal_layout.addRow("f_end (user-defined):", self.f_end_spin)
         
         self.Tp_spin = QDoubleSpinBox()
-        self.Tp_spin.setRange(50, 5000)
+        # No artificial maximum limit - only physical constraint (80% of round-trip time) applies
+        # Set a very large initial maximum (will be updated based on D_min)
+        self.Tp_spin.setRange(1.0, 10000000.0)  # 1 µs to 10 seconds (10,000,000 µs)
         self.Tp_spin.setValue(500)
         self.Tp_spin.setSuffix(" µs")
         self.Tp_spin.valueChanged.connect(self._on_tp_changed)
         self.Tp_spin.valueChanged.connect(self._save_gui_settings)
         signal_layout.addRow("Tp:", self.Tp_spin)
+        
+        # Tp_min: Minimum pulse duration for minimum distance (D_min)
+        # This is the maximum allowed Tp based on physical constraint
+        self.Tp_min_label = QLabel("—")
+        self.Tp_min_label.setStyleSheet("color: orange; font-weight: bold;")
+        signal_layout.addRow("Tp_min (for D_min, physical constraint):", self.Tp_min_label)
+        
+        # Tp_optimal: Optimal pulse duration for target distance (D_target)
+        # This can be larger than Tp_min if D_target > D_min
+        self.Tp_optimal_label = QLabel("—")
+        self.Tp_optimal_label.setStyleSheet("color: green; font-weight: bold;")
+        signal_layout.addRow("Tp_optimal (for D_target):", self.Tp_optimal_label)
         
         self.window_combo = QComboBox()
         self.window_combo.addItems(["Rect", "Hann", "Tukey"])
@@ -960,6 +974,9 @@ class MainWindow(QMainWindow):
             # Recalculate minimum signal duration
             self._update_min_tp()
             
+            # Update Tp labels (will be updated in _update_min_tp, but ensure it's called)
+            self._update_tp_labels()
+            
             # Always update accuracy information (this will also update recommended frequencies)
             # This must be done even during loading to show correct recommended frequencies
             self._update_accuracy_info()
@@ -1252,6 +1269,8 @@ class MainWindow(QMainWindow):
                 self.z_spin.blockSignals(False)
             # Update signal path when D_target changes
             self._update_signal_path()
+            # Update Tp_optimal label when D_target changes
+            self._update_tp_labels()
     
     def _on_link_depth_to_range_changed(self, state: int):
         """Handler for link depth to range checkbox change."""
@@ -1304,6 +1323,9 @@ class MainWindow(QMainWindow):
             D_target = self.D_target_spin.value()
             target_snr = self.target_snr_spin.value()
             
+            # Log for debugging
+            self.logger.info(f"_calculate_optimal_tp: D_target={D_target:.1f}m, target_snr={target_snr:.1f}dB")
+            
             # Get hardware parameters
             transducer_id = self.transducer_combo.currentText()
             lna_id = self.lna_combo.currentText()
@@ -1339,35 +1361,83 @@ class MainWindow(QMainWindow):
                 'bottom_reflection': bottom_reflection
             }
             
-            # Calculate optimal Tp
+            # Get current Tp
+            current_tp = self.Tp_spin.value()
+            
+            # Check if we have results from last simulation
+            # If current SNR is above target, we need to REDUCE Tp
+            # If current SNR is below target or unknown, we calculate minimum Tp needed
+            current_snr = None
+            if hasattr(self, 'last_output_dto') and self.last_output_dto:
+                current_snr = self.last_output_dto.SNR_ADC
+            
             calculator = SignalCalculator()
-            optimal_tp = calculator.calculate_optimal_tp_for_snr(
-                D_target=D_target,
-                target_snr_db=target_snr,
-                transducer_params=transducer_params,
-                hardware_params=hardware_params,
-                T=T,
-                S=S,
-                z=z,
-                f_start=f_start,
-                f_end=f_end,
-                tx_voltage=tx_voltage
-            )
+            
+            # If we have current SNR and it's above target, use reduction formula
+            if current_snr is not None and current_snr > target_snr * 1.05:  # 5% margin
+                # SNR scales with 10*log10(Tp), so to reduce SNR by X dB, reduce Tp by factor 10^(-X/10)
+                # Formula: Tp_new = Tp_current * 10^((target_snr - SNR_current) / 10)
+                snr_reduction_needed = current_snr - target_snr
+                tp_reduction_factor = 10 ** (-snr_reduction_needed / 10.0)
+                optimal_tp = current_tp * tp_reduction_factor
+                
+                # Check physical constraint: Tp must not exceed 80% of round-trip time at D_target
+                # NOTE: Use D_target, not D_min, for physical constraint in this calculation
+                Tp_max_us = calculator.calculate_optimal_pulse_duration(D_target, T, S, z, min_tp=None)
+                optimal_tp = min(optimal_tp, Tp_max_us)
+                
+                # Ensure minimum 1 µs
+                optimal_tp = max(1.0, optimal_tp)
+                
+                calculation_method = "Reduction from current Tp (SNR above target)"
+            else:
+                # Calculate minimum Tp needed to achieve target SNR (from scratch)
+                optimal_tp = calculator.calculate_optimal_tp_for_snr(
+                    D_target=D_target,
+                    target_snr_db=target_snr,
+                    transducer_params=transducer_params,
+                    hardware_params=hardware_params,
+                    T=T,
+                    S=S,
+                    z=z,
+                    f_start=f_start,
+                    f_end=f_end,
+                    tx_voltage=tx_voltage
+                )
+                calculation_method = "Minimum Tp to achieve target SNR"
             
             # Update Tp spinbox
             self.Tp_spin.setValue(optimal_tp)
             
+            # Calculate Tp_optimal for comparison (80% of TOF for D_target)
+            Tp_optimal_for_target = calculator.calculate_optimal_pulse_duration(D_target, T, S, z, min_tp=None)
+            
             # Show message
+            message = f"Optimal pulse duration: {optimal_tp:.1f} µs\n\n"
+            message += f"Calculated for:\n"
+            message += f"  • Distance: {D_target:.1f} m\n"
+            message += f"  • Target SNR: {target_snr:.1f} dB\n"
+            if current_snr is not None:
+                message += f"  • Current SNR: {current_snr:.2f} dB\n"
+            message += f"  • Current Tp: {current_tp:.1f} µs\n"
+            message += f"  • Method: {calculation_method}\n"
+            message += f"\nNote:\n"
+            message += f"  • This is the MINIMUM Tp to achieve target SNR\n"
+            message += f"  • Tp_optimal (for D_target, 80% of TOF): {Tp_optimal_for_target:.1f} µs\n"
+            message += f"  • These values differ because:\n"
+            message += f"    - Calculate Optimal Tp: minimum Tp for target SNR\n"
+            message += f"    - Tp_optimal label: maximum Tp (80% of round-trip time)\n"
+            message += f"\n  • Attenuation: considered (spreading + absorption)\n"
+            message += f"  • Bottom reflection: {bottom_reflection:.1f} dB"
+            
             QMessageBox.information(
                 self,
                 "Optimal Tp Calculated",
-                f"Optimal pulse duration: {optimal_tp:.1f} µs\n\n"
-                f"Calculated for:\n"
-                f"  • Distance: {D_target:.1f} m\n"
-                f"  • Target SNR: {target_snr:.1f} dB\n"
-                f"  • Attenuation: considered (spreading + absorption)\n"
-                f"  • Bottom reflection: {bottom_reflection:.1f} dB"
+                message
             )
+            
+            # Update Tp labels after calculation
+            self._update_tp_labels()
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to calculate optimal Tp:\n{str(e)}")
@@ -1382,13 +1452,30 @@ class MainWindow(QMainWindow):
             S = self.S_spin.value()
             z = self.z_spin.value()
             
-            # Use CORE to calculate optimal Tp with all constraints
+            # Tp_min: Minimum pulse duration for minimum distance (D_min)
+            # This is the maximum allowed Tp based on physical constraint:
+            # Tp cannot exceed 80% of round-trip time at D_min to allow signal reception
+            # Formula: Tp_max = 0.8 * (2 * D_min / c) where c is sound speed
+            Tp_min_us = self.signal_calculator.calculate_min_pulse_duration(D_min, T, S, z)
+            
+            # Tp_optimal: Optimal pulse duration for target distance (D_target)
+            # This is calculated for the target distance to achieve good SNR
+            # It can be larger than Tp_min if D_target > D_min
+            D_target = self.D_target_spin.value() if hasattr(self, 'D_target_spin') else (D_min + D_max) / 2
+            Tp_optimal_us = self.signal_calculator.calculate_optimal_pulse_duration(
+                D_target, T, S, z, min_tp=None
+            )
+            
+            # Use CORE to calculate recommended Tp with all constraints
+            # This returns the optimal Tp considering both D_min and D_max constraints
+            # NOTE: This is the minimum duration for minimum distance, not for target distance
             Tp_recommended_us = self.signal_calculator.calculate_optimal_tp_with_constraints(
                 D_min, D_max, T, S, z
             )
             
             # Calculate maximum allowed Tp from D_min (for spinbox maximum)
-            Tp_max_us = self.signal_calculator.calculate_min_pulse_duration(D_min, T, S, z)
+            # This is the physical constraint limit
+            Tp_max_us = Tp_min_us
             
             # Save old maximum value and current Tp
             old_max = self.Tp_spin.maximum()
@@ -1413,13 +1500,128 @@ class MainWindow(QMainWindow):
                 # Current value is close to optimal - update when optimal changes
                 should_update = True
             
+            # Update labels for Tp_min and Tp_optimal
+            self._update_tp_labels(Tp_min_us, Tp_optimal_us, D_min, D_target)
+            
             if should_update:
                 self.Tp_spin.blockSignals(True)
                 self.Tp_spin.setValue(Tp_recommended_us)
                 self.Tp_spin.blockSignals(False)
+                self.logger.info(f"_update_min_tp: Tp_min={Tp_min_us:.1f} µs (for D_min={D_min}m), Tp_optimal={Tp_optimal_us:.1f} µs (for D_target={D_target:.1f}m), Tp_recommended={Tp_recommended_us:.1f} µs")
             
         except Exception as e:
             self.logger.warning(f"Error calculating Tp duration: {e}")
+    
+    def _update_tp_labels(self, Tp_min_us=None, Tp_optimal_us=None, D_min=None, D_target=None):
+        """Updates Tp_min and Tp_optimal labels."""
+        try:
+            # Check if labels exist
+            if not hasattr(self, 'Tp_min_label') or not hasattr(self, 'Tp_optimal_label'):
+                return
+            
+            if Tp_min_us is None or D_min is None:
+                D_min = self.D_min_spin.value()
+                T = self.T_spin.value()
+                S = self.S_spin.value()
+                z = self.z_spin.value()
+                Tp_min_us = self.signal_calculator.calculate_min_pulse_duration(D_min, T, S, z)
+            
+            if Tp_optimal_us is None or D_target is None:
+                # Get D_target - use D_target_spin if available, otherwise use average of D_min and D_max
+                if hasattr(self, 'D_target_spin') and self.D_target_spin is not None:
+                    D_target = self.D_target_spin.value()
+                else:
+                    D_min_val = self.D_min_spin.value() if hasattr(self, 'D_min_spin') else 0.5
+                    D_max_val = self.D_max_spin.value() if hasattr(self, 'D_max_spin') else 500.0
+                    D_target = (D_min_val + D_max_val) / 2
+                
+                # Tp_optimal should show the same value as "Calculate Optimal Tp"
+                # This is the minimum Tp needed to achieve target SNR (using calculate_optimal_tp_for_snr)
+                try:
+                    # Get hardware parameters
+                    transducer_id = self.transducer_combo.currentText()
+                    lna_id = self.lna_combo.currentText()
+                    vga_id = self.vga_combo.currentText()
+                    target_snr = self.target_snr_spin.value()
+                    
+                    if transducer_id and lna_id and vga_id:
+                        transducer_params = self.data_provider.get_transducer(transducer_id)
+                        lna_params = self.data_provider.get_lna(lna_id)
+                        vga_params = self.data_provider.get_vga(vga_id)
+                        
+                        # Get signal parameters
+                        f_start = self.f_start_spin.value()
+                        f_end = self.f_end_spin.value()
+                        
+                        # Get environment parameters
+                        T = self.T_spin.value()
+                        S = self.S_spin.value()
+                        z = self.z_spin.value()
+                        bottom_reflection = self.bottom_reflection_spin.value()
+                        
+                        # Get TX voltage
+                        tx_voltage = transducer_params.get('V_max', transducer_params.get('V_nominal', 100.0))
+                        
+                        # Prepare hardware params
+                        # Use VGA gain from signal_path_widget if available (user may have adjusted it)
+                        # Otherwise use from VGA params
+                        if hasattr(self, 'signal_path_widget') and self.signal_path_widget:
+                            try:
+                                vga_gain = self.signal_path_widget.get_vga_gain()
+                            except Exception:
+                                vga_gain = vga_params.get('G', 30)
+                        else:
+                            vga_gain = vga_params.get('G', 30)
+                        
+                        hardware_params = {
+                            'lna_gain': lna_params.get('G_LNA', lna_params.get('G', 20)),
+                            'vga_gain': vga_gain,
+                            'lna_nf': lna_params.get('NF_LNA', lna_params.get('NF', 2.0)),
+                            'bottom_reflection': bottom_reflection
+                        }
+                        
+                        # Calculate optimal Tp using the same method as "Calculate Optimal Tp"
+                        Tp_optimal_us = self.signal_calculator.calculate_optimal_tp_for_snr(
+                            D_target=D_target,
+                            target_snr_db=target_snr,
+                            transducer_params=transducer_params,
+                            hardware_params=hardware_params,
+                            T=T,
+                            S=S,
+                            z=z,
+                            f_start=f_start,
+                            f_end=f_end,
+                            tx_voltage=tx_voltage
+                        )
+                    else:
+                        # Fallback: use calculate_optimal_pulse_duration if hardware not selected
+                        # This returns 80% of TOF for D_target, not optimal for SNR
+                        T = self.T_spin.value()
+                        S = self.S_spin.value()
+                        z = self.z_spin.value()
+                        Tp_optimal_us = self.signal_calculator.calculate_optimal_pulse_duration(
+                            D_target, T, S, z, min_tp=None
+                        )
+                        self.logger.warning(f"_update_tp_labels: Hardware not fully selected, using fallback calculation (80% TOF): {Tp_optimal_us:.1f} µs")
+                except Exception as e:
+                    # Fallback: use calculate_optimal_pulse_duration if calculation fails
+                    # This returns 80% of TOF for D_target, not optimal for SNR
+                    self.logger.warning(f"Error calculating Tp_optimal with calculate_optimal_tp_for_snr: {e}, using fallback", exc_info=True)
+                    T = self.T_spin.value()
+                    S = self.S_spin.value()
+                    z = self.z_spin.value()
+                    Tp_optimal_us = self.signal_calculator.calculate_optimal_pulse_duration(
+                        D_target, T, S, z, min_tp=None
+                    )
+                    self.logger.warning(f"_update_tp_labels: Using fallback calculation (80% TOF): {Tp_optimal_us:.1f} µs")
+            
+            # Update labels
+            self.Tp_min_label.setText(f"{Tp_min_us:.1f} µs (D_min={D_min:.1f} m)")
+            self.Tp_optimal_label.setText(f"{Tp_optimal_us:.1f} µs (D_target={D_target:.1f} m, for target SNR)")
+            
+            self.logger.info(f"_update_tp_labels: Tp_min={Tp_min_us:.1f} µs (D_min={D_min:.1f}m), Tp_optimal={Tp_optimal_us:.1f} µs (D_target={D_target:.1f}m, for target SNR)")
+        except Exception as e:
+            self.logger.warning(f"Error updating Tp labels: {e}", exc_info=True)
     
     def _on_tp_changed(self):
         """Handler for pulse duration change - recalculates accuracy."""
@@ -1467,6 +1669,8 @@ class MainWindow(QMainWindow):
         if self.use_recommended_freq_checkbox.isChecked():
             self._apply_recommended_frequencies()
         self._update_signal_path()
+        # Update Tp labels when environment changes
+        self._update_tp_labels()
     
     def _get_input_dto(self) -> Optional[InputDTO]:
         """Creates InputDTO from UI parameters."""
@@ -1715,8 +1919,14 @@ Success: {'Yes' if output_dto.success else 'No'}
             return
         
         recommendations = self.last_output_dto.recommendations
-        if not recommendations or not recommendations.suggested_changes:
+        if not recommendations:
+            QMessageBox.warning(self, "No Recommendations", "No recommendations available. Run simulation first.")
+            return
+        
+        # Check if suggested_changes exists and is not empty
+        if not hasattr(recommendations, 'suggested_changes') or not recommendations.suggested_changes:
             QMessageBox.information(self, "No Changes", "No parameter changes suggested. All parameters are optimal.")
+            self.logger.info(f"_apply_recommendations: No suggested_changes. recommendations.decrease_Tp={getattr(recommendations, 'decrease_Tp', False)}, recommendations.increase_Tp={getattr(recommendations, 'increase_Tp', False)}")
             return
         
         # Apply suggested changes
@@ -1760,6 +1970,11 @@ Success: {'Yes' if output_dto.success else 'No'}
             message = "Applied recommendations:\n" + "\n".join(f"  • {c}" for c in changes_applied)
             QMessageBox.information(self, "Recommendations Applied", message)
             self.logger.info(f"Applied recommendations: {changes_applied}")
+            
+            # Update Tp labels after applying all changes
+            # (Tp_optimal may depend on f_start, f_end, and other parameters)
+            self._update_tp_labels()
+            
             # Trigger save
             self._save_gui_settings()
         else:
@@ -1830,6 +2045,9 @@ Success: {'Yes' if output_dto.success else 'No'}
             
             # Update signal path after loading settings
             self._update_signal_path_after_load()
+            
+            # Update Tp labels after loading settings
+            self._update_tp_labels()
         else:
             self.logger.debug(f"showEvent: GUI settings already loaded (_gui_settings_loaded={self._gui_settings_loaded}), skipping")
     

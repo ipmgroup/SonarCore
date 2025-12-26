@@ -57,8 +57,9 @@ class SignalCalculator:
         # Convert to microseconds
         Tp_max_us = Tp_max_sec * 1e6
         
-        # Limit to reasonable values (50-5000 µs)
-        Tp_max_us = max(50.0, min(Tp_max_us, 5000.0))
+        # No artificial limits - only physical constraint (80% of round-trip time)
+        # Minimum is still enforced to avoid division by zero, but no maximum limit
+        Tp_max_us = max(1.0, Tp_max_us)  # Minimum 1 µs to avoid issues
         
         return Tp_max_us
     
@@ -151,8 +152,9 @@ class SignalCalculator:
         if min_tp is not None:
             Tp_optimal_us = max(min_tp, Tp_optimal_us)
         
-        # Limit to reasonable values
-        Tp_optimal_us = max(50.0, min(Tp_optimal_us, 5000.0))
+        # No artificial maximum limit - only physical constraint (80% of TOF) applies
+        # Ensure minimum 1 µs to avoid numerical issues
+        Tp_optimal_us = max(1.0, Tp_optimal_us)
         
         return Tp_optimal_us
     
@@ -407,6 +409,13 @@ class SignalCalculator:
         """
         Calculates optimal pulse duration considering all constraints.
         
+        NOTE: This returns the MINIMUM pulse duration for MINIMUM distance (D_min).
+        This is the maximum allowed Tp based on physical constraint:
+        Tp cannot exceed 80% of round-trip time at D_min to allow signal reception.
+        
+        For target distance (D_target), use calculate_optimal_pulse_duration(D_target, ...)
+        which may return a larger value if D_target > D_min.
+        
         Args:
             D_min: Minimum range, m
             D_max: Maximum range, m
@@ -415,9 +424,12 @@ class SignalCalculator:
             z: Depth, m
         
         Returns:
-            Optimal pulse duration, µs
+            Minimum pulse duration for minimum distance, µs
+            (This is the maximum allowed Tp based on D_min constraint)
         """
         # Calculate maximum allowed duration (from D_min)
+        # This is the MINIMUM pulse duration for MINIMUM distance
+        # Formula: Tp_max = 0.8 * (2 * D_min / c) where c is sound speed
         Tp_max_us = self.calculate_min_pulse_duration(D_min, T, S, z)
         
         # Calculate optimal duration for average distance
@@ -427,6 +439,7 @@ class SignalCalculator:
         )
         
         # Use optimal duration, but not more than maximum
+        # This ensures Tp doesn't exceed physical constraint from D_min
         Tp_recommended_us = min(Tp_optimal_us, Tp_max_us)
         
         return Tp_recommended_us
@@ -636,14 +649,15 @@ class SignalCalculator:
             Tp_required_sec = BT_product / bandwidth
             Tp_required_us = Tp_required_sec * 1e6
         else:
-            # Fallback if bandwidth is 0
-            Tp_required_us = 100.0
+            # Fallback if bandwidth is 0 - use minimum physical constraint
+            Tp_required_us = 1.0
         
-        # Apply constraints
-        # 1. Minimum Tp: 100 µs (reasonable minimum)
-        # 2. Maximum Tp: 80% of round-trip time or 5000 µs, whichever is smaller
-        Tp_max_constrained = min(Tp_max_us, 5000.0)
-        Tp_optimal_us = max(100.0, min(Tp_required_us, Tp_max_constrained))
+        # Apply only physical constraint: Tp must not exceed 80% of round-trip time
+        # No artificial minimum or maximum limits
+        Tp_optimal_us = min(Tp_required_us, Tp_max_us)
+        
+        # Ensure minimum 1 µs to avoid numerical issues
+        Tp_optimal_us = max(1.0, Tp_optimal_us)
         
         return Tp_optimal_us
 
