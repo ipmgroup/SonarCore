@@ -41,45 +41,51 @@ def extract_transducers_from_text(text: str, series: str) -> List[Dict[str, Any]
     if spec_start == -1:
         return transducers
     
-    # Ищем строку "Frequency Options" (может быть на отдельной строке)
+    # Ищем строку "Frequency Options" или просто "Frequency"
     freq_options_idx = -1
     for i in range(spec_start, min(spec_start + 20, len(lines))):
         line = lines[i].strip()
-        if 'Frequency Options' in line or (i > spec_start and 'frequency' in line.lower() and 'options' in line.lower()):
+        if 'Frequency Options' in line or ('Frequency' in line and 'Options' not in line):
             freq_options_idx = i
             break
     
     if freq_options_idx == -1:
-        # Пробуем найти просто "Frequency" или числа, которые могут быть частотами
-        for i in range(spec_start, min(spec_start + 20, len(lines))):
-            line = lines[i].strip()
-            # Ищем строку с числами, которые могут быть частотами
-            nums = re.findall(r'\b(\d{3})\b', line)
-            if len(nums) >= 3:  # Несколько трёхзначных чисел - вероятно частоты
-                freq_options_idx = i - 1  # Предыдущая строка может быть заголовком
-                break
-    
-    if freq_options_idx == -1:
         return transducers
     
-    # Собираем частоты из следующих строк до "kHz"
+    # Собираем частоты из следующих строк до "kHz" или до следующего параметра
     frequencies = []
     kHz_line_idx = -1
-    for i in range(freq_options_idx + 1, min(freq_options_idx + 15, len(lines))):
+    next_param_idx = len(lines)  # Индекс следующего параметра после частот
+    
+    # Ищем строку с "kHz"
+    for i in range(freq_options_idx + 1, min(freq_options_idx + 20, len(lines))):
         line = lines[i].strip()
         if 'kHz' in line.lower():
             kHz_line_idx = i
             break
     
-    if kHz_line_idx > 0:
-        # Извлекаем все числа из строк между "Frequency Options" и "kHz"
-        for j in range(freq_options_idx + 1, kHz_line_idx):
-            prev_line = lines[j].strip()
-            # Ищем числа и WB
-            for match in re.finditer(r'\b(\d+)(WB)?\b', prev_line, re.IGNORECASE):
-                freq_val = int(match.group(1))
-                is_wb = match.group(2) is not None and match.group(2).upper() == 'WB'
-                if freq_val >= 100:  # Фильтруем только реальные частоты (>= 100 кГц)
+    # Ищем следующий параметр (Beam Angle, Transmit Sensitivity и т.д.)
+    for i in range(freq_options_idx + 1, min(spec_start + 100, len(lines))):
+        line = lines[i].strip()
+        if any(keyword in line for keyword in ['Beam Angle', 'Transmit Sensitivity', 'Receive Sensitivity', 'Bandwidth']):
+            next_param_idx = i
+            break
+    
+    # Определяем диапазон строк для поиска частот
+    search_end = min(kHz_line_idx if kHz_line_idx > 0 else next_param_idx, freq_options_idx + 20)
+    
+    # Извлекаем все числа из строк между "Frequency" и "kHz" или следующим параметром
+    for j in range(freq_options_idx + 1, search_end):
+        prev_line = lines[j].strip()
+        # Пропускаем пустые строки и строки с единицами измерения
+        if not prev_line or prev_line.lower() in ['khz', 'hz', 'degrees', 'db', 'v', 'ohms']:
+            continue
+        # Ищем числа и WB (частоты могут быть от 10 до 200 кГц)
+        for match in re.finditer(r'\b(\d{2,3})(WB)?\b', prev_line, re.IGNORECASE):
+            freq_val = int(match.group(1))
+            is_wb = match.group(2) is not None and match.group(2).upper() == 'WB'
+            if 10 <= freq_val <= 200:  # Фильтруем реальные частоты (10-200 кГц)
+                if (freq_val, is_wb) not in frequencies:  # Избегаем дубликатов
                     frequencies.append((freq_val, is_wb))
     
     if not frequencies:
@@ -106,9 +112,23 @@ def extract_transducers_from_text(text: str, series: str) -> List[Dict[str, Any]
                 next_line = lines[j]
                 if 'Degrees' in next_line or 'degrees' in next_line.lower():
                     # Извлекаем числа из строк между заголовком и "Degrees"
-                    for k in range(i + 1, j):
-                        nums = re.findall(r'\b(\d+\.?\d*)\b', lines[k])
-                        values.extend([float(n) for n in nums])
+                    for k in range(i + 1, j + 1):  # Включаем строку с "Degrees"
+                        line_to_parse = lines[k]
+                        # Обрабатываем как простые числа, так и форматы типа "19x34"
+                        # Берем первое число из пары (основной угол) для эллиптических
+                        # Ищем паттерны типа "19x34" или просто "19"
+                        # Паттерн: число, возможно за которым следует "x" и еще число
+                        pattern = r'\b(\d+\.?\d*)(?:x\d+\.?\d*)?\b'
+                        matches = re.findall(pattern, line_to_parse)
+                        if matches:
+                            # Берем только первое число из каждой пары (если есть "x")
+                            for num_str in matches:
+                                try:
+                                    val = float(num_str)
+                                    if 5 <= val <= 50:  # Разумный диапазон для beam angle
+                                        values.append(val)
+                                except ValueError:
+                                    pass
                     break
             if values:
                 beam_angles = values[:len(frequencies)]
@@ -218,8 +238,12 @@ def main():
     data_dir.mkdir(parents=True, exist_ok=True)
     
     pdf_files = [
+        (project_root / '65SERIES.pdf', '65'),
         (project_root / '142SERIES.pdf', '142'),
-        (project_root / '390SERIES.pdf', '390')
+        (project_root / '172SERIES.pdf', '172'),
+        (project_root / '320SERIES.pdf', '320'),
+        (project_root / '390SERIES.pdf', '390'),
+        (project_root / '395SERIES.pdf', '395')
     ]
     
     all_transducers = []
@@ -244,16 +268,29 @@ def main():
     
     print(f"\nВсего извлечено моделей: {len(all_transducers)}")
     
-    # Создаём индексный файл
+    # Создаём индексный файл, включая все существующие модели
     index_file = data_dir / 'index.json'
+    all_models = set([t['model'] for t in all_transducers])
+    
+    # Добавляем существующие модели из файлов (кроме example и index)
+    for json_file in data_dir.glob('*.json'):
+        if json_file.name not in ['index.json', 'example_transducer.json']:
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if 'model' in data:
+                        all_models.add(data['model'])
+            except Exception:
+                pass  # Пропускаем файлы с ошибками
+    
     index_data = {
-        'total_models': len(all_transducers),
-        'models': [t['model'] for t in all_transducers]
+        'total_models': len(all_models),
+        'models': sorted(list(all_models))
     }
     with open(index_file, 'w', encoding='utf-8') as f:
         json.dump(index_data, f, indent=2, ensure_ascii=False)
     
-    print(f"Создан индексный файл: {index_file}")
+    print(f"Создан индексный файл: {index_file} (всего моделей: {len(all_models)})")
 
 
 if __name__ == '__main__':

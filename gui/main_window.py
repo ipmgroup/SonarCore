@@ -937,6 +937,8 @@ class MainWindow(QMainWindow):
             transducers = self.data_provider.list_transducers()
             if not transducers:
                 transducers = ['example_transducer']
+            # Sort transducers by model name for easier selection
+            transducers = sorted(transducers)
             self.transducer_combo.addItems(transducers)
             
             lna_list = self.data_provider.list_lna()
