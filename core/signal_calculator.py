@@ -544,6 +544,77 @@ class SignalCalculator:
         
         return optimal_tp
     
+    def _calculate_snr_from_sonar_equation(self, D: float, Tp_us: float,
+                                          transducer_params: Dict, hardware_params: Dict,
+                                          T: float, S: float, z: float,
+                                          f_start: float, f_end: float,
+                                          tx_voltage: float = 100.0) -> float:
+        """
+        Calculates SNR using active sonar equation.
+        
+        Common function used by both calculate_optimal_tp_for_snr and calculate_max_depth_for_snr_tp.
+        
+        Uses the active sonar equation:
+        SNR = SL + TS + DI - NL - 2TL + 10*log10(BT)
+        
+        Args:
+            D: Range/depth, m
+            Tp_us: Pulse duration, µs
+            transducer_params: Transducer parameters
+            hardware_params: Hardware parameters
+            T: Temperature, °C
+            S: Salinity, PSU
+            z: Depth, m
+            f_start: CHIRP start frequency, Hz
+            f_end: CHIRP end frequency, Hz
+            tx_voltage: Transmitter voltage, V
+        
+        Returns:
+            SNR, dB
+        """
+        # Get parameters
+        S_TX = transducer_params.get('S_TX', 170)  # dB re 1µPa/V @ 1m
+        bottom_reflection = hardware_params.get('bottom_reflection', -15)  # dB (reflection loss, negative)
+        
+        # Calculate bandwidth
+        bandwidth = abs(f_end - f_start)  # Hz
+        f_center = (f_start + f_end) / 2
+        Tp_sec = Tp_us * 1e-6  # Convert to seconds
+        
+        # === ACTIVE SONAR EQUATION ===
+        # SNR = SL + TS + DI - NL - 2TL + 10*log10(BT)
+        
+        # 1. Source Level (SL)
+        SL = S_TX + 20 * np.log10(tx_voltage)  # dB re 1µPa @ 1m
+        
+        # 2. Target Strength (TS)
+        TS = -bottom_reflection  # dB (target strength, positive)
+        
+        # 3. Directivity Index (DI)
+        DI = 0.0  # dB
+        
+        # 4. Noise Level (NL)
+        base_noise_spectrum_level_db = 120.0  # dB re 1µPa @ 1kHz (spectrum level)
+        bandwidth_khz = bandwidth / 1000.0 if bandwidth > 0 else 1.0
+        NL = base_noise_spectrum_level_db + 10 * np.log10(bandwidth_khz)
+        lna_nf = hardware_params.get('lna_nf', 2.0)  # dB
+        if lna_nf > 1.0:
+            NL += (lna_nf - 1.0) * 0.2  # Small contribution
+        
+        # 5. Transmission Loss (TL) - one-way
+        spreading_loss_one_way = self.water_model.calculate_spreading_loss(D)  # One-way
+        absorption_loss_one_way = self.water_model.calculate_absorption_loss(D, f_center, T, S, z)  # One-way
+        TL = spreading_loss_one_way + absorption_loss_one_way  # One-way TL
+        
+        # 6. Pulse Compression Gain: 10*log10(BT)
+        BT_product = bandwidth * Tp_sec
+        PG_db = 10 * np.log10(BT_product) if BT_product > 0 else 0
+        
+        # Calculate SNR using active sonar equation
+        SNR = SL + TS + DI - NL - 2*TL + PG_db
+        
+        return SNR
+    
     def calculate_optimal_tp_for_snr(self, D_target: float, target_snr_db: float,
                                      transducer_params: Dict, hardware_params: Dict,
                                      T: float, S: float, z: float,
@@ -605,65 +676,26 @@ class SignalCalculator:
         bandwidth = abs(f_end - f_start)  # Hz
         f_center = (f_start + f_end) / 2
         
-        # === ACTIVE SONAR EQUATION ===
-        # SNR = SL + TS + DI - NL - 2TL + 10*log10(BT)
-        # where:
-        # SL = Source Level (transmitted signal level at 1m)
-        # TS = Target Strength (reflection coefficient, positive for bottom reflection)
-        # DI = Directivity Index (assumed 0 for omnidirectional)
-        # NL = Noise Level (ambient + receiver noise)
-        # TL = Transmission Loss (one-way path loss)
-        # 2TL = round-trip path loss
-        # BT = bandwidth * time (pulse compression product)
-        # 10*log10(BT) = pulse compression gain
+        # Calculate components needed for Tp calculation
+        # Use same formulas as in _calculate_snr_from_sonar_equation
+        S_TX = transducer_params.get('S_TX', 170)
+        bottom_reflection = hardware_params.get('bottom_reflection', -15)
+        SL = S_TX + 20 * np.log10(tx_voltage)
+        TS = -bottom_reflection
+        DI = 0.0
         
-        # 1. Source Level (SL)
-        # SL = S_TX + 20*log10(V) where S_TX is sensitivity, V is voltage
-        SL = S_TX + 20 * np.log10(tx_voltage)  # dB re 1µPa @ 1m
-        
-        # 2. Target Strength (TS)
-        # For bottom reflection, TS is the reflection coefficient
-        # bottom_reflection is negative (loss), so TS = -bottom_reflection (positive)
-        TS = -bottom_reflection  # dB (target strength, positive)
-        
-        # 3. Directivity Index (DI)
-        # Assumed 0 for omnidirectional transducer
-        DI = 0.0  # dB
-        
-        # 4. Noise Level (NL)
-        # In sonar equation, NL is the noise level in dB re 1µPa
-        # For hydroacoustic systems, noise includes:
-        # - Ambient ocean noise (dominant, frequency-dependent)
-        # - Thermal noise (significant at high frequencies)
-        # - Receiver noise (LNA noise figure)
-        #
-        # Typical ambient noise levels (spectrum level at 1kHz):
-        # - Sea state 0 (calm): ~120-130 dB re 1µPa @ 1kHz
-        # - Sea state 3 (moderate): ~110-120 dB re 1µPa @ 1kHz
-        # Note: In sonar equation, NL is typically given as positive dB
-        # For 160 kHz band, ambient noise is lower than at low frequencies
-        # Use conservative estimate: 115-125 dB re 1µPa @ 1kHz for 160 kHz band
-        base_noise_spectrum_level_db = 120.0  # dB re 1µPa @ 1kHz (spectrum level)
-        
-        # Adjust for bandwidth: noise power increases with bandwidth
-        # NL = NL_spectrum + 10*log10(BW/1kHz)
+        # Noise Level
+        base_noise_spectrum_level_db = 120.0
         bandwidth_khz = bandwidth / 1000.0 if bandwidth > 0 else 1.0
         NL = base_noise_spectrum_level_db + 10 * np.log10(bandwidth_khz)
-        
-        # Add small contribution from LNA noise figure
-        lna_nf = hardware_params.get('lna_nf', 2.0)  # dB
+        lna_nf = hardware_params.get('lna_nf', 2.0)
         if lna_nf > 1.0:
-            NL += (lna_nf - 1.0) * 0.2  # Small contribution
+            NL += (lna_nf - 1.0) * 0.2
         
-        # 5. Transmission Loss (TL) - one-way
-        # TL = Spreading Loss + Absorption Loss
-        spreading_loss_one_way = self.water_model.calculate_spreading_loss(D_target)  # One-way
-        absorption_loss_one_way = self.water_model.calculate_absorption_loss(D_target, f_center, T, S, z)  # One-way
-        TL = spreading_loss_one_way + absorption_loss_one_way  # One-way TL
-        
-        # 6. Pulse Compression Gain: 10*log10(BT)
-        # where B = bandwidth (Hz), T = pulse duration (seconds)
-        # BT = bandwidth * Tp (product)
+        # Transmission Loss (TL) - one-way
+        spreading_loss_one_way = self.water_model.calculate_spreading_loss(D_target)
+        absorption_loss_one_way = self.water_model.calculate_absorption_loss(D_target, f_center, T, S, z)
+        TL = spreading_loss_one_way + absorption_loss_one_way
         
         # === CALCULATE REQUIRED Tp ===
         # From sonar equation: SNR = SL + TS + DI - NL - 2TL + 10*log10(BT)
@@ -695,4 +727,110 @@ class SignalCalculator:
         Tp_optimal_us = max(1.0, Tp_optimal_us)
         
         return Tp_optimal_us
+    
+    def calculate_max_depth_for_snr_tp(self, target_snr_db: float, Tp_us: float,
+                                      transducer_params: Dict, hardware_params: Dict,
+                                      T: float, S: float, z: float,
+                                      f_start: float, f_end: float,
+                                      tx_voltage: float = 100.0,
+                                      D_min: float = 0.1, D_max: float = 1000.0) -> float:
+        """
+        Calculates maximum depth/range for given SNR and pulse duration.
+        
+        Uses active sonar equation and solves for maximum D where SNR >= target_SNR.
+        Uses iterative approach (binary search) to find maximum depth.
+        
+        Args:
+            target_snr_db: Target SNR, dB
+            Tp_us: Pulse duration, µs
+            transducer_params: Transducer parameters
+            hardware_params: Hardware parameters
+            T: Temperature, °C
+            S: Salinity, PSU
+            z: Depth, m (used for pressure calculation)
+            f_start: CHIRP start frequency, Hz
+            f_end: CHIRP end frequency, Hz
+            tx_voltage: Transmitter voltage, V
+            D_min: Minimum depth to search, m
+            D_max: Maximum depth to search, m
+        
+        Returns:
+            Maximum depth/range, m (or 0 if not achievable)
+        """
+        # Binary search for maximum depth
+        # We need to find maximum D where SNR(D) >= target_snr_db
+        # Use common function _calculate_snr_from_sonar_equation
+        left = D_min
+        right = D_max
+        max_valid_D = 0.0
+        tolerance = 0.1  # 10 cm tolerance
+        
+        for _ in range(50):  # Max 50 iterations
+            D_test = (left + right) / 2.0
+            
+            # Calculate SNR for this depth using common function
+            SNR_calc = self._calculate_snr_from_sonar_equation(
+                D_test, Tp_us, transducer_params, hardware_params,
+                T, S, z, f_start, f_end, tx_voltage
+            )
+            
+            if SNR_calc >= target_snr_db:
+                # This depth is valid, try larger depth
+                max_valid_D = D_test
+                left = D_test
+            else:
+                # SNR too low, try smaller depth
+                right = D_test
+            
+            if right - left < tolerance:
+                break
+        
+        return max_valid_D
+    
+    def calculate_depth_vs_tp_curve(self, target_snr_db: float,
+                                    transducer_params: Dict, hardware_params: Dict,
+                                    T: float, S: float, z: float,
+                                    f_start: float, f_end: float,
+                                    tx_voltage: float = 100.0,
+                                    Tp_min_us: float = 50.0, Tp_max_us: float = 5000.0,
+                                    num_points: int = 100,
+                                    D_max_search: float = 10000.0) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Calculates depth vs pulse duration curve for given SNR.
+        
+        Args:
+            target_snr_db: Target SNR, dB
+            transducer_params: Transducer parameters
+            hardware_params: Hardware parameters
+            T: Temperature, °C
+            S: Salinity, PSU
+            z: Depth, m
+            f_start: CHIRP start frequency, Hz
+            f_end: CHIRP end frequency, Hz
+            tx_voltage: Transmitter voltage, V
+            Tp_min_us: Minimum pulse duration, µs
+            Tp_max_us: Maximum pulse duration, µs
+            num_points: Number of points in curve
+            D_max_search: Maximum depth to search, m (default: 10000.0)
+        
+        Returns:
+            Tuple (Tp_array, Depth_array) - Tp_array in µs, Depth_array in m
+        """
+        Tp_array = np.linspace(Tp_min_us, Tp_max_us, num_points)
+        Depth_array = np.zeros_like(Tp_array)
+        
+        # Use provided D_max_search to find maximum achievable depth
+        # Don't limit by physical constraint of Tp - we want to see what depth is achievable for given SNR
+        
+        for i, Tp_us in enumerate(Tp_array):
+            # Use D_max_search directly - don't limit by physical constraint
+            # This shows maximum depth achievable for given SNR, regardless of Tp physical limit
+            Depth_array[i] = self.calculate_max_depth_for_snr_tp(
+                target_snr_db, Tp_us,
+                transducer_params, hardware_params,
+                T, S, z, f_start, f_end, tx_voltage,
+                D_min=0.1, D_max=D_max_search
+            )
+        
+        return Tp_array, Depth_array
 

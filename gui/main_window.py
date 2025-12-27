@@ -581,6 +581,18 @@ class MainWindow(QMainWindow):
         
         tabs.addTab(enob_tab, "ENOB")
         
+        # Depth vs Tp tab - graph showing depth vs pulse duration for given SNR
+        depth_tp_tab = QWidget()
+        depth_tp_layout = QVBoxLayout(depth_tp_tab)
+        
+        self.depth_tp_plot = pg.PlotWidget(title="Depth vs Pulse Duration (for Target SNR)")
+        self.depth_tp_plot.setLabel('left', 'Depth', units='m')
+        self.depth_tp_plot.setLabel('bottom', 'Pulse Duration', units='ms')
+        self.depth_tp_plot.showGrid(x=True, y=True, alpha=0.3)
+        depth_tp_layout.addWidget(self.depth_tp_plot)
+        
+        tabs.addTab(depth_tp_tab, "Depth vs Tp")
+        
         layout.addWidget(tabs)
         
         return panel
@@ -1860,6 +1872,7 @@ class MainWindow(QMainWindow):
         self._display_enob(output_dto)
         self._display_signals(input_dto, output_dto)
         self._plot_results(input_dto, output_dto)
+        self._plot_depth_vs_tp(input_dto)
         self._display_signal_path(input_dto)
     
     def _display_results(self, input_dto: InputDTO, output_dto: OutputDTO):
@@ -2223,8 +2236,8 @@ Success: {'Yes' if output_dto.success else 'No'}
                 # Check for valid data
                 if np.any(np.isfinite(tx_signal)) and np.any(np.isfinite(t_ms)):
                     self.signals_plot_tx.plot(t_ms, tx_signal, pen=pg.mkPen('b', width=2))
-                    # Show first 5 ms or full signal, whichever is smaller
-                    max_time = min(t[-1] * 1000, t[0] * 1000 + 5)
+                    # Show full signal duration
+                    max_time = t[-1] * 1000
                     self.signals_plot_tx.setXRange(t[0] * 1000, max_time)
                     # Auto-scale Y axis for this signal
                     y_min, y_max = np.min(tx_signal), np.max(tx_signal)
@@ -2265,7 +2278,7 @@ Success: {'Yes' if output_dto.success else 'No'}
                             text_item = pg.TextItem(f'Signal attenuated by {abs(attenuation_db):.1f} dB', 
                                                    anchor=(0.5, 1), color='g')
                             # Position at top center of plot
-                            max_time = min(t[-1] * 1000, t[0] * 1000 + 5)
+                            max_time = t[-1] * 1000
                             text_x = (t[0] * 1000 + max_time) / 2
                             y_min, y_max = np.min(signal_at_bottom), np.max(signal_at_bottom)
                             y_range = y_max - y_min
@@ -2276,8 +2289,8 @@ Success: {'Yes' if output_dto.success else 'No'}
                             text_item.setPos(text_x, text_y)
                             self.signals_plot_bottom.addItem(text_item)
                     
-                    # Use same X range as graph 1
-                    max_time = min(t[-1] * 1000, t[0] * 1000 + 5)
+                    # Use same X range as graph 1 - show full signal duration
+                    max_time = t[-1] * 1000
                     self.signals_plot_bottom.setXRange(t[0] * 1000, max_time)
                     # Auto-scale Y axis for this signal
                     y_min, y_max = np.min(signal_at_bottom), np.max(signal_at_bottom)
@@ -2499,15 +2512,119 @@ Success: {'Yes' if output_dto.success else 'No'}
                                                          anchor=(0.5, 0.5)))
             
         except Exception as e:
-            self.logger.warning(f"Error displaying signals: {e}")
-            # Clear plots and show error
-            self.signals_plot_tx.clear()
-            self.signals_plot_bottom.clear()
-            self.signals_plot_rx.clear()
-            self.signals_plot_lna.clear()
-            self.signals_plot_vga.clear()
-            self.signals_plot_tx.addItem(pg.TextItem(f'Error displaying signals:\n{str(e)}', 
-                                                    anchor=(0.5, 0.5), color='r'))
+            self.logger.error(f"Error displaying signals: {e}", exc_info=True)
+    
+    def _plot_depth_vs_tp(self, input_dto: InputDTO):
+        """Plots depth vs pulse duration curve for target SNR."""
+        try:
+            # Clear previous plot
+            self.depth_tp_plot.clear()
+            
+            # Get current parameters
+            transducer_id = input_dto.hardware.transducer_id
+            if not transducer_id:
+                self.depth_tp_plot.addItem(pg.TextItem('No transducer selected', anchor=(0.5, 0.5)))
+                return
+            
+            # Get transducer parameters (same as in _calculate_optimal_tp)
+            transducer_params = self.data_provider.get_transducer(transducer_id)
+            
+            # Get hardware parameters (same as in _calculate_optimal_tp)
+            lna_params = self.data_provider.get_lna(input_dto.hardware.lna_id)
+            hardware_params = {
+                'lna_nf': self.signal_path_widget.get_lna_nf() if hasattr(self, 'signal_path_widget') else lna_params.get('NF_LNA', 2.0),
+                'bottom_reflection': input_dto.environment.bottom_reflection
+            }
+            
+            # Get signal and environment parameters
+            target_snr = input_dto.target_snr
+            f_start = input_dto.signal.f_start
+            f_end = input_dto.signal.f_end
+            T = input_dto.environment.T
+            S = input_dto.environment.S
+            z = input_dto.environment.z
+            
+            # Calculate Tp range using the same approach as in simulation
+            D_min = input_dto.range.D_min
+            D_max = input_dto.range.D_max
+            D_target = input_dto.range.D_target if input_dto.range.D_target is not None else (D_min + D_max) / 2
+            
+            # hardware_params already defined above, reuse it
+            hardware_params_for_tp = hardware_params
+            
+            # Use current Tp from input_dto (not calculated optimal)
+            current_Tp_us = input_dto.signal.Tp
+            
+            # Calculate physical constraints
+            # Tp_min_physical is actually the MAXIMUM allowed Tp based on D_min constraint
+            # (80% of round-trip time for D_min - this is what the system enforces)
+            Tp_max_allowed = self.signal_calculator.calculate_min_pulse_duration(D_min, T, S, z)
+            
+            # For graph, use range that includes current Tp
+            # Tp_max should be at least the current Tp (to show full range)
+            # But also respect the system limit (Tp_max_allowed)
+            Tp_min_us = min(Tp_max_allowed * 0.01, current_Tp_us * 0.1)  # Start from 1% of max or 10% of current Tp
+            Tp_max_us = max(Tp_max_allowed, current_Tp_us)  # Show range up to current Tp (or system limit, whichever is larger)
+            
+            # Ensure minimum 1 µs to avoid numerical issues
+            Tp_min_us = max(1.0, Tp_min_us)
+            Tp_max_us = max(1.0, Tp_max_us)
+            
+            if Tp_max_us <= Tp_min_us:
+                # If max <= min, expand range
+                Tp_max_us = Tp_min_us * 2.0
+            
+            if Tp_max_us <= Tp_min_us:
+                self.depth_tp_plot.addItem(pg.TextItem('Invalid Tp range', anchor=(0.5, 0.5)))
+                return
+            
+            # Calculate depth vs Tp curve
+            # Use a large D_max_search to find maximum achievable depth for each Tp
+            # Don't limit by input D_max - we want to see full capability
+            D_max_search = max(D_max * 10, 10000.0)  # At least 10x D_max or 10km, whichever is larger
+            
+            Tp_array, Depth_array = self.signal_calculator.calculate_depth_vs_tp_curve(
+                target_snr, transducer_params, hardware_params,
+                T, S, z, f_start, f_end,
+                tx_voltage=100.0,  # Default voltage
+                Tp_min_us=Tp_min_us, Tp_max_us=Tp_max_us,
+                num_points=100,
+                D_max_search=D_max_search  # Large search range to find maximum depth
+            )
+            
+            # Filter out zero depths (not achievable)
+            valid_mask = Depth_array > 0.1
+            if np.any(valid_mask):
+                Tp_valid = Tp_array[valid_mask]
+                Depth_valid = Depth_array[valid_mask]
+                
+                # Convert Tp from microseconds to milliseconds for display
+                Tp_valid_ms = Tp_valid / 1000.0
+                
+                # Log for debugging
+                self.logger.debug(f"Depth vs Tp plot: {len(Tp_valid_ms)} points, Tp range: {Tp_valid_ms[0]:.2f}-{Tp_valid_ms[-1]:.2f} ms, Depth range: {Depth_valid[0]:.2f}-{Depth_valid[-1]:.2f} m")
+                
+                # Plot the curve: X = Tp (ms), Y = Depth (m)
+                self.depth_tp_plot.plot(Tp_valid_ms, Depth_valid, pen=pg.mkPen('b', width=2))
+                
+                # Add label with target SNR
+                text_item = pg.TextItem(f'Target SNR: {target_snr:.1f} dB', anchor=(0, 1), color='b')
+                text_item.setPos(Tp_valid_ms[0] if len(Tp_valid_ms) > 0 else Tp_min_us / 1000.0, 
+                                np.max(Depth_valid) if len(Depth_valid) > 0 else 100)
+                self.depth_tp_plot.addItem(text_item)
+                
+                # Set fixed axis ranges: X from 0 to Tp_max, Y from 0 to D_max
+                # X-axis: 0 to maximum Tp (in milliseconds)
+                self.depth_tp_plot.setXRange(0, Tp_max_us / 1000.0)
+                # Y-axis: 0 to D_max (in meters)
+                self.depth_tp_plot.setYRange(0, D_max)
+            else:
+                self.depth_tp_plot.addItem(pg.TextItem('No valid depths for target SNR', anchor=(0.5, 0.5)))
+            
+        except Exception as e:
+            self.logger.error(f"Error plotting depth vs Tp: {e}", exc_info=True)
+            self.depth_tp_plot.clear()
+            self.depth_tp_plot.addItem(pg.TextItem(f'Error: {str(e)}', anchor=(0.5, 0.5), color='r'))
     
     def _display_signal_path(self, input_dto: InputDTO):
         """Displays signal path as diagram."""
