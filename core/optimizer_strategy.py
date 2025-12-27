@@ -25,6 +25,12 @@ def apply_max_tp_min_vga_strategy(
     
     # Calculate maximum Tp (80% of round-trip time for D_target)
     try:
+        # DEBUG: Log input parameters
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"apply_max_tp_min_vga_strategy: D_target={D_target:.2f}m, T={input_dto.environment.T:.1f}°C, S={input_dto.environment.S:.1f}PSU, z={input_dto.environment.z:.1f}m")
+        logger.info(f"apply_max_tp_min_vga_strategy: current Tp={input_dto.signal.Tp:.2f} µs")
+        
         Tp_max_for_D_target = calculator.calculate_optimal_pulse_duration(
             D_target,
             input_dto.environment.T,
@@ -32,18 +38,69 @@ def apply_max_tp_min_vga_strategy(
             input_dto.environment.z,
             min_tp=None
         )
+        
+        logger.info(f"apply_max_tp_min_vga_strategy: calculated Tp_max_for_D_target={Tp_max_for_D_target:.2f} µs")
+        
+        # Safety check: ensure Tp_max is reasonable (not NaN or infinite)
+        if not np.isfinite(Tp_max_for_D_target) or Tp_max_for_D_target <= 0:
+            # Fallback to current Tp if calculation failed
+            logger.error(f"apply_max_tp_min_vga_strategy: Invalid Tp_max_for_D_target={Tp_max_for_D_target}, using current Tp")
+            return input_dto.signal.Tp, recommendations_text + "WARNING: Failed to calculate maximum Tp, keeping current value. "
+        
+        # Additional check: Tp_max should be reasonable for given distance
+        # For D_target in meters, Tp_max should be approximately: 0.8 * (2 * D_target / 1500) * 1e6 µs
+        # Rough check: Tp_max should be between 1000 * D_target / 1500 and 2000 * D_target / 1500 µs
+        expected_tp_min = (D_target / 1500.0) * 0.8 * 1e6 * 0.5  # At least 50% of expected
+        expected_tp_max = (D_target / 1500.0) * 0.8 * 1e6 * 2.0  # At most 200% of expected
+        if Tp_max_for_D_target < expected_tp_min or Tp_max_for_D_target > expected_tp_max:
+            logger.warning(f"apply_max_tp_min_vga_strategy: Tp_max_for_D_target={Tp_max_for_D_target:.2f} µs seems unreasonable for D_target={D_target:.2f}m (expected range: {expected_tp_min:.2f}-{expected_tp_max:.2f} µs)")
+        
         optimal_tp = Tp_max_for_D_target
         
-        # Check if current Tp is less than maximum
-        if input_dto.signal.Tp < optimal_tp:
-            # Recommend increasing Tp to maximum
+        # Tolerance for comparison: 2% or 50 µs, whichever is larger
+        # This prevents recommending Tp increase when current Tp is already close to maximum
+        # Increased tolerance to handle rounding errors and prevent infinite optimization loops
+        tolerance = max(optimal_tp * 0.02, 50.0)
+        
+        # Check if current Tp is significantly less than maximum
+        # Also check if current Tp is already at or above maximum (with tolerance)
+        current_tp = input_dto.signal.Tp
+        
+        if current_tp >= optimal_tp - tolerance:
+            # Tp is already at or close to maximum (or even above) - use current Tp
+            optimal_tp = current_tp
+            # Explicitly clear increase_Tp flag since Tp is already at maximum
+            recommendations.increase_Tp = False
+            # Clear _optimal_tp_for_snr to prevent suggesting changes
+            if hasattr(recommendations, '_optimal_tp_for_snr'):
+                recommendations._optimal_tp_for_snr = None
+            recommendations_text += f"Strategy 1 (Max Tp + Min VGA): Current Tp ({current_tp:.1f} µs) is already at or close to maximum ({Tp_max_for_D_target:.1f} µs, tolerance: {tolerance:.1f} µs). "
+            recommendations_text += f"No Tp increase needed. "
+        elif current_tp < optimal_tp - tolerance:
+            # Current Tp is significantly less than maximum - recommend gradual increase
+            # Use same logic as fallback: 20% for normal distances, 50% for large distances (>200m)
+            # This prevents huge jumps and allows optimization to converge gradually
+            is_large_distance = D_target > 200.0
+            if is_large_distance:
+                recommended_tp_increase = current_tp * 1.5  # 50% increase for large distances
+                increase_pct = 50
+            else:
+                recommended_tp_increase = current_tp * 1.2  # 20% increase for normal distances
+                increase_pct = 20
+            
+            # Don't exceed maximum Tp
+            if recommended_tp_increase > optimal_tp:
+                recommended_tp_increase = optimal_tp
+                increase_pct = ((recommended_tp_increase - current_tp) / current_tp) * 100  # Recalculate actual percentage
+            
             recommendations.increase_Tp = True
-            recommendations._optimal_tp_for_snr = optimal_tp
-            recommendations_text += f"Strategy 1 (Max Tp + Min VGA): Set Tp to maximum (80% TOF for D_target = {optimal_tp:.1f} µs) to maximize signal energy. "
-            recommendations_text += f"Current Tp ({input_dto.signal.Tp:.1f} µs) < maximum ({optimal_tp:.1f} µs). "
-        else:
-            # Tp is already at or above maximum - use current Tp
-            optimal_tp = input_dto.signal.Tp
+            recommendations._optimal_tp_for_snr = recommended_tp_increase
+            logger.info(f"apply_max_tp_min_vga_strategy: Setting gradual increase: current_tp={current_tp:.2f} µs, recommended_tp_increase={recommended_tp_increase:.2f} µs ({increase_pct:.1f}%), optimal_tp={optimal_tp:.2f} µs")
+            recommendations_text += f"Strategy 1 (Max Tp + Min VGA): Increase Tp gradually ({increase_pct:.1f}% increase) to maximize signal energy. "
+            recommendations_text += f"Current Tp ({current_tp:.1f} µs) -> suggested ({recommended_tp_increase:.1f} µs), maximum possible ({optimal_tp:.1f} µs). "
+            recommendations_text += f"\n\n⚠️ IMPORTANT: Strategy 1 will continue to suggest Tp increases until maximum is reached. "
+            recommendations_text += f"Do not run optimization repeatedly - apply recommendations once and let optimization converge gradually over multiple iterations. "
+            recommendations_text += f"Running optimization again immediately will suggest another increase, as Tp is still below maximum. "
         
         return optimal_tp, recommendations_text
     except Exception:

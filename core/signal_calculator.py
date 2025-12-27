@@ -42,6 +42,11 @@ class SignalCalculator:
         P = self.water_model.calculate_pressure(z)
         c = self.water_model.calculate_sound_speed(T, S, P)
         
+        # DEBUG: Log calculation parameters
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"_calculate_max_tp_from_distance: D={D:.2f}m, T={T:.1f}°C, S={S:.1f}PSU, z={z:.1f}m, P={P:.2f}Pa, c={c:.2f}m/s")
+        
         # Calculate propagation time (round-trip)
         # TOF = 2 * D / c (seconds)
         TOF_sec = 2.0 * D / c
@@ -53,6 +58,8 @@ class SignalCalculator:
         
         # Convert to microseconds
         Tp_max_us = Tp_max_sec * 1e6
+        
+        logger.debug(f"_calculate_max_tp_from_distance: TOF={TOF_sec*1000:.2f}ms, Tp_max={Tp_max_us:.2f}µs")
         
         # Ensure minimum 1 µs to avoid numerical issues
         Tp_max_us = max(1.0, Tp_max_us)

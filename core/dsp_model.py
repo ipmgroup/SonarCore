@@ -30,6 +30,8 @@ class DSPModel:
         """
         Performs matched filtering.
         
+        Uses FFT-based correlation for large arrays (more efficient than np.correlate).
+        
         Args:
             received: Received signal
             reference: Reference signal (CHIRP)
@@ -37,10 +39,20 @@ class DSPModel:
         Returns:
             Matched filter response
         """
-        # Matched filtering via correlation
-        correlation = np.correlate(received, reference, mode='full')
+        # For large arrays, use FFT-based correlation (much faster)
+        # Threshold: if arrays are large (>100k samples), use FFT
+        if len(received) > 100000 or len(reference) > 100000:
+            from scipy import signal as scipy_signal
+            # Use FFT-based correlation (much faster for large arrays)
+            correlation = scipy_signal.fftconvolve(received, reference[::-1], mode='full')
+        else:
+            # For small arrays, use direct correlation (more accurate)
+            correlation = np.correlate(received, reference, mode='full')
+        
         # Normalization
-        correlation = correlation / np.max(np.abs(correlation))
+        max_val = np.max(np.abs(correlation))
+        if max_val > 0:
+            correlation = correlation / max_val
         return correlation
     
     def find_peak(self, signal: np.ndarray, threshold: float = 0.5, use_interpolation: bool = True) -> Optional[float]:

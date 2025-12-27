@@ -15,7 +15,7 @@ class SignalModel:
     
     @staticmethod
     def generate_chirp(f_start: float, f_end: float, Tp: float, 
-                      fs: float, window: str = 'Hann') -> Tuple[np.ndarray, np.ndarray]:
+                      fs: float, window: str = 'Hann', limit_tp_for_fast_calc: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
         Generates CHIRP signal.
         
@@ -25,11 +25,27 @@ class SignalModel:
             Tp: Pulse duration, µs
             fs: Sampling frequency, Hz
             window: Window function ('Rect', 'Hann', 'Tukey')
+            limit_tp_for_fast_calc: If True and Tp > 1s, limit to 1s for fast calculation
         
         Returns:
             Tuple (time axis, signal)
         """
         Tp_sec = Tp * 1e-6  # Convert from µs to seconds
+        
+        # Apply limit if requested and Tp > 1 second
+        MAX_TP_FOR_FAST_CALC_SEC = 1.0  # 1 second
+        original_tp_sec = Tp_sec
+        if limit_tp_for_fast_calc and Tp_sec > MAX_TP_FOR_FAST_CALC_SEC:
+            Tp_sec = MAX_TP_FOR_FAST_CALC_SEC
+            import warnings
+            import logging
+            logger = logging.getLogger(__name__)
+            warning_msg = (f"Tp limited to {MAX_TP_FOR_FAST_CALC_SEC} s for fast calculation "
+                          f"(original: {original_tp_sec:.2f} s = {Tp * 1e-6:.2f} s). "
+                          f"Uncheck 'Limit Tp to 1s' for full simulation.")
+            warnings.warn(warning_msg, UserWarning)
+            logger.info(warning_msg)  # Also log to logger for visibility
+        
         N = int(fs * Tp_sec)
         t = np.arange(N) / fs
         

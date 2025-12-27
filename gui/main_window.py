@@ -52,6 +52,74 @@ class SimulationThread(QThread):
         self.finished.emit(self.input_dto, output_dto)
 
 
+class OptimizationThread(QThread):
+    """Thread for optimization execution."""
+    
+    finished = pyqtSignal(object, object)  # input_dto, output_dto
+    progress = pyqtSignal(int, str)  # iteration, message
+    
+    def __init__(self, simulator, input_dto, max_iterations=10, vga_gain=None):
+        super().__init__()
+        self.simulator = simulator
+        self.input_dto = input_dto
+        self.max_iterations = max_iterations
+        self.vga_gain = vga_gain
+    
+    def run(self):
+        """Executes optimization."""
+        iteration = 0
+        current_input = self.input_dto
+        
+        # Get optimization strategy
+        optimization_strategy = getattr(current_input, 'optimization_strategy', 'max_tp_min_vga')
+        
+        while iteration < self.max_iterations:
+            self.progress.emit(iteration + 1, f"Running iteration {iteration + 1}/{self.max_iterations}...")
+            
+            output_dto = self.simulator.simulate(current_input, iteration=iteration, absorption_only=True, vga_gain=self.vga_gain)
+            
+            # Get recommendations to check if there are any changes to apply
+            rec = output_dto.recommendations
+            changes = self.simulator.optimizer.suggest_parameter_changes(current_input, rec)
+            
+            # For Strategy 1 (Max Tp + Min VGA), continue optimization even if constraints are met
+            # to maximize Tp. Only stop if no more changes are suggested.
+            # For other strategies, stop if constraints are met.
+            if output_dto.success:
+                if optimization_strategy == "max_tp_min_vga":
+                    # Strategy 1: Continue if there are recommendations to maximize Tp
+                    if changes and 'Tp' in changes:
+                        # There are Tp changes to apply, continue optimization
+                        pass  # Don't return, continue to apply changes
+                    else:
+                        # No more Tp changes, optimization complete
+                        self.progress.emit(iteration + 1, f"Optimization completed in {iteration + 1} iterations (Tp maximized)")
+                        self.finished.emit(current_input, output_dto)
+                        return
+                else:
+                    # Other strategies: Stop if constraints are met
+                    self.progress.emit(iteration + 1, f"Optimization completed in {iteration + 1} iterations")
+                    self.finished.emit(current_input, output_dto)
+                    return
+            
+            if not changes:
+                # No more changes suggested, optimization complete
+                self.progress.emit(iteration + 1, "No more parameter changes suggested")
+                self.finished.emit(current_input, output_dto)
+                return
+            
+            # Update input_dto with changes
+            from core.dto import SignalDTO
+            signal_dict = current_input.signal.dict()
+            signal_dict.update({k: v for k, v in changes.items() if k in ['Tp', 'f_start', 'f_end']})
+            current_input.signal = SignalDTO(**signal_dict)
+            
+            iteration += 1
+        
+        self.progress.emit(self.max_iterations, f"Maximum iterations ({self.max_iterations}) reached")
+        self.finished.emit(current_input, output_dto)
+
+
 class MainWindow(QMainWindow):
     """Main application window."""
     
@@ -69,6 +137,9 @@ class MainWindow(QMainWindow):
         
         # Flag to prevent overwriting values during loading
         self._loading_settings = False
+        
+        # Flag to prevent overwriting Tp when it was manually set by user via "Calculate Optimal Tp"
+        self._tp_manually_set = False
         
         # Setup logging
         self._setup_logging()
@@ -271,13 +342,28 @@ class MainWindow(QMainWindow):
         signal_layout.addRow("Window:", self.window_combo)
         
         self.sample_rate_spin = QDoubleSpinBox()
-        self.sample_rate_spin.setRange(100000, 10000000)  # 100 kHz to 10 MHz
-        self.sample_rate_spin.setValue(2000000)  # Default 2 MHz
+        self.sample_rate_spin.setRange(10000, 10000000)  # 10 kHz to 10 MHz (minimum will be updated based on f_end)
+        self.sample_rate_spin.setValue(2000000)
         self.sample_rate_spin.setSuffix(" Hz")
-        self.sample_rate_spin.setToolTip("Sampling frequency for signal generation. Must be >= 2*f_end (Nyquist criterion)")
-        self.sample_rate_spin.valueChanged.connect(self._on_sample_rate_changed)
         self.sample_rate_spin.valueChanged.connect(self._save_gui_settings)
         signal_layout.addRow("Sample Rate:", self.sample_rate_spin)
+        
+        self.sample_rate_spin.setToolTip("Sampling frequency for signal generation. Must be >= 2*f_end (Nyquist criterion)")
+        # Use editingFinished instead of valueChanged to avoid validation during typing
+        # This allows user to type intermediate values (like 100000) without immediate correction
+        self.sample_rate_spin.editingFinished.connect(self._on_sample_rate_editing_finished)
+        # Still validate on valueChanged, but only adjust if value is definitely below minimum
+        # and user is not actively typing (check if spinbox has focus)
+        self.sample_rate_spin.valueChanged.connect(self._on_sample_rate_changed)
+        
+        # Checkbox for limiting Tp to 1s for fast calculation
+        self.limit_tp_fast_calc_checkbox = QCheckBox("Limit Tp to 1s for fast calculation (if Tp > 1s)")
+        self.limit_tp_fast_calc_checkbox.setChecked(False)  # Default: no limit
+        self.limit_tp_fast_calc_checkbox.setToolTip("If checked and Tp > 1 second, limits signal generation to 1 second\n"
+                                                   "to reduce memory usage and improve performance.\n"
+                                                   "Useful for quick parameter exploration.")
+        self.limit_tp_fast_calc_checkbox.stateChanged.connect(self._save_gui_settings)
+        signal_layout.addRow("", self.limit_tp_fast_calc_checkbox)
         
         signal_group.setLayout(signal_layout)
         layout.addWidget(signal_group)
@@ -362,7 +448,7 @@ class MainWindow(QMainWindow):
         range_layout.addRow("D_min:", self.D_min_spin)
         
         self.D_max_spin = QDoubleSpinBox()
-        self.D_max_spin.setRange(0.1, 1000)
+        self.D_max_spin.setRange(0.1, 100000)  # Up to 100 km
         self.D_max_spin.setValue(100.0)  # Default will be overridden by gui.json if exists
         self.D_max_spin.setSuffix(" m")
         self.D_max_spin.valueChanged.connect(self._on_d_max_changed)
@@ -371,7 +457,7 @@ class MainWindow(QMainWindow):
         
         # Target distance for simulation
         self.D_target_spin = QDoubleSpinBox()
-        self.D_target_spin.setRange(0.1, 1000)
+        self.D_target_spin.setRange(0.1, 100000)  # Up to 100 km
         self.D_target_spin.setValue(100.0)  # Default will be overridden by gui.json if exists
         self.D_target_spin.setSuffix(" m")
         self.D_target_spin.setToolTip(
@@ -706,7 +792,28 @@ class MainWindow(QMainWindow):
                         self.window_combo.blockSignals(False)
                 if hasattr(self, 'sample_rate_spin'):
                     self.sample_rate_spin.blockSignals(True)
-                    self.sample_rate_spin.setValue(sig.get('sample_rate', 2000000.0))
+                    sample_rate = sig.get('sample_rate', 2000000.0)
+                    # Validate and auto-correct sample_rate to satisfy Nyquist criterion (sample_rate >= 2*f_end)
+                    # Use f_end from spinbox (already loaded above) or from settings as fallback
+                    if hasattr(self, 'f_end_spin'):
+                        f_end = self.f_end_spin.value()
+                    else:
+                        f_end = sig.get('f_end', 250000.0)
+                    min_sample_rate = 2 * f_end
+                    # Update minimum before setting value to ensure QDoubleSpinBox allows the value
+                    self.sample_rate_spin.setMinimum(min_sample_rate)
+                    if sample_rate < min_sample_rate:
+                        self.logger.warning(f"Loaded sample_rate ({sample_rate} Hz) < 2*f_end ({min_sample_rate} Hz). "
+                                           f"Auto-correcting to {min_sample_rate} Hz to satisfy Nyquist criterion.")
+                        sample_rate = min_sample_rate
+                    # If loaded sample_rate is significantly higher than minimum (e.g., > 3x), adjust to reasonable value (2x minimum)
+                    # This prevents using unnecessarily high sample_rate from old settings with different transducer
+                    elif sample_rate > min_sample_rate * 3:
+                        suggested_rate = min_sample_rate * 2.0
+                        self.logger.info(f"Loaded sample_rate ({sample_rate} Hz) is much higher than minimum ({min_sample_rate} Hz) "
+                                       f"for current transducer. Adjusting to {suggested_rate:.0f} Hz for better performance.")
+                        sample_rate = suggested_rate
+                    self.sample_rate_spin.setValue(sample_rate)
                     self.sample_rate_spin.blockSignals(False)
             
             if 'environment' in settings:
@@ -853,6 +960,10 @@ class MainWindow(QMainWindow):
                     self.link_depth_to_range_checkbox.blockSignals(True)
                     self.link_depth_to_range_checkbox.setChecked(opts.get('link_depth_to_range', False))
                     self.link_depth_to_range_checkbox.blockSignals(False)
+                if hasattr(self, 'limit_tp_fast_calc_checkbox'):
+                    self.limit_tp_fast_calc_checkbox.blockSignals(True)
+                    self.limit_tp_fast_calc_checkbox.setChecked(opts.get('limit_tp_for_fast_calculation', False))
+                    self.limit_tp_fast_calc_checkbox.blockSignals(False)
         except Exception as e:
             self.logger.warning(f"Error applying GUI settings: {e}")
     
@@ -930,7 +1041,8 @@ class MainWindow(QMainWindow):
                     'adc_id': self.adc_combo.currentText() if hasattr(self, 'adc_combo') else ''
                 },
                 'options': {
-                    'link_depth_to_range': self.link_depth_to_range_checkbox.isChecked() if hasattr(self, 'link_depth_to_range_checkbox') else False
+                    'link_depth_to_range': self.link_depth_to_range_checkbox.isChecked() if hasattr(self, 'link_depth_to_range_checkbox') else False,
+                    'limit_tp_for_fast_calculation': self.limit_tp_fast_calc_checkbox.isChecked() if hasattr(self, 'limit_tp_fast_calc_checkbox') else False
                 }
             }
             
@@ -957,6 +1069,12 @@ class MainWindow(QMainWindow):
             self.vga_combo.blockSignals(True)
             self.adc_combo.blockSignals(True)
             
+            # Clear existing items before loading new ones
+            self.transducer_combo.clear()
+            self.lna_combo.clear()
+            self.vga_combo.clear()
+            self.adc_combo.clear()
+            
             # Load lists
             transducers = self.data_provider.list_transducers()
             if not transducers:
@@ -978,6 +1096,8 @@ class MainWindow(QMainWindow):
             adc_list = self.data_provider.list_adc()
             if not adc_list:
                 adc_list = ['example_adc']
+            # Sort ADC list for easier selection
+            adc_list = sorted(adc_list)
             self.adc_combo.addItems(adc_list)
             
             # Unblock signals after loading
@@ -1052,6 +1172,18 @@ class MainWindow(QMainWindow):
                     # Use user-defined frequencies (calculated from target accuracy)
                     self._apply_user_frequencies()
             
+            # Update sample rate minimum based on FINAL f_end (after frequencies are set)
+            # This must be done AFTER _apply_recommended_frequencies() or _apply_user_frequencies()
+            # because they may change f_end, and we need to ensure sample_rate is correct for the final f_end
+            # We call _on_chirp_frequency_changed() explicitly to ensure sample_rate is updated correctly
+            # This will handle both minimum update and value correction if needed
+            try:
+                # Explicitly call _on_chirp_frequency_changed to update sample_rate based on final f_end
+                # This ensures sample_rate is always correct after transducer change
+                self._on_chirp_frequency_changed()
+            except Exception as e:
+                self.logger.error(f"Error updating sample_rate in _on_transducer_changed: {e}", exc_info=True)
+            
             # Always update signal path (but don't overwrite loaded values)
             if not self._loading_settings:
                 self._update_signal_path()
@@ -1074,14 +1206,29 @@ class MainWindow(QMainWindow):
             min_sample_rate = 2 * f_end
             current_sample_rate = self.sample_rate_spin.value()
             
+            self.logger.info(f"_on_chirp_frequency_changed: f_end={f_end}, min_sample_rate={min_sample_rate}, current_sample_rate={current_sample_rate}, current >= min: {current_sample_rate >= min_sample_rate}")
+            
+            # Block signals before updating minimum to prevent automatic value correction
+            # QDoubleSpinBox automatically corrects value to minimum if current < new minimum
+            self.sample_rate_spin.blockSignals(True)
+            
             # Update minimum sample rate
             self.sample_rate_spin.setMinimum(min_sample_rate)
             
-            # If current sample rate is below minimum, adjust it
+            # Only adjust if current sample rate is below minimum (don't force if user wants higher value)
             if current_sample_rate < min_sample_rate:
-                self.sample_rate_spin.blockSignals(True)
+                self.logger.warning(f"_on_chirp_frequency_changed: current_sample_rate {current_sample_rate} < min {min_sample_rate}, adjusting")
                 self.sample_rate_spin.setValue(min_sample_rate)
                 self.sample_rate_spin.blockSignals(False)
+                QMessageBox.warning(self, "Warning", 
+                                 f"Sample rate must be >= 2*f_end ({min_sample_rate:.0f} Hz). "
+                                 f"Adjusted to {min_sample_rate:.0f} Hz.")
+            else:
+                # Current value is valid (>= minimum), leave it as is
+                # Don't let QDoubleSpinBox auto-correct it
+                self.logger.info(f"_on_chirp_frequency_changed: current_sample_rate {current_sample_rate} >= min {min_sample_rate}, keeping it unchanged")
+                self.sample_rate_spin.blockSignals(False)
+            # If current_sample_rate >= min_sample_rate, leave it as is (user can set higher value)
             
             # User can manually change frequencies, but we can also recalculate from target accuracy
             # For now, just update accuracy info
@@ -1440,8 +1587,43 @@ class MainWindow(QMainWindow):
             )
             calculation_method = "Minimum Tp to achieve target SNR"
             
+            # Log the calculated value
+            self.logger.info(f"_calculate_optimal_tp: calculated optimal_tp={optimal_tp:.2f} µs")
+            
+            # Check if Tp_spin signals are blocked
+            signals_blocked = self.Tp_spin.signalsBlocked()
+            if signals_blocked:
+                self.logger.warning(f"_calculate_optimal_tp: Tp_spin signals are blocked, unblocking before setting value")
+                self.Tp_spin.blockSignals(False)
+            
+            # Check if value is within range
+            min_tp = self.Tp_spin.minimum()
+            max_tp = self.Tp_spin.maximum()
+            if optimal_tp < min_tp or optimal_tp > max_tp:
+                self.logger.warning(f"_calculate_optimal_tp: optimal_tp={optimal_tp:.2f} is outside range [{min_tp:.2f}, {max_tp:.2f}], adjusting range")
+                # Expand range if needed
+                if optimal_tp < min_tp:
+                    self.Tp_spin.setMinimum(max(1.0, optimal_tp * 0.9))
+                if optimal_tp > max_tp:
+                    self.Tp_spin.setMaximum(optimal_tp * 1.1)
+            
             # Update Tp spinbox
             self.Tp_spin.setValue(optimal_tp)
+            
+            # Set flag to prevent automatic overwriting by _update_min_tp()
+            self._tp_manually_set = True
+            
+            # Verify the value was set correctly
+            actual_tp = self.Tp_spin.value()
+            if abs(actual_tp - optimal_tp) > 0.01:
+                self.logger.error(f"_calculate_optimal_tp: Failed to set Tp! Requested={optimal_tp:.2f}, Actual={actual_tp:.2f}")
+                QMessageBox.warning(self, "Warning", 
+                                   f"Failed to set Tp value.\n"
+                                   f"Requested: {optimal_tp:.2f} µs\n"
+                                   f"Actual: {actual_tp:.2f} µs")
+                self._tp_manually_set = False  # Reset flag if setting failed
+            else:
+                self.logger.info(f"_calculate_optimal_tp: Successfully set Tp to {actual_tp:.2f} µs, _tp_manually_set=True")
             
             # Calculate Tp_optimal for comparison (80% of TOF for D_target)
             Tp_optimal_for_target = calculator.calculate_optimal_pulse_duration(D_target, T, S, z, min_tp=None)
@@ -1536,11 +1718,21 @@ class MainWindow(QMainWindow):
             # Update labels for Tp_min and Tp_optimal
             self._update_tp_labels(Tp_min_us, Tp_optimal_us, D_min, D_target)
             
+            # Don't update Tp if it was manually set by user via "Calculate Optimal Tp"
+            # unless current value is invalid (greater than maximum)
             if should_update:
-                self.Tp_spin.blockSignals(True)
-                self.Tp_spin.setValue(Tp_recommended_us)
-                self.Tp_spin.blockSignals(False)
-                self.logger.info(f"_update_min_tp: Tp_min={Tp_min_us:.1f} µs (for D_min={D_min}m), Tp_optimal={Tp_optimal_us:.1f} µs (for D_target={D_target:.1f}m), Tp_recommended={Tp_recommended_us:.1f} µs")
+                if self._tp_manually_set and current_tp <= Tp_max_us:
+                    # Tp was manually set and is still valid - don't overwrite it
+                    self.logger.info(f"_update_min_tp: Skipping Tp update because _tp_manually_set=True and current_tp={current_tp:.1f} <= Tp_max={Tp_max_us:.1f}")
+                else:
+                    # Tp was not manually set, or current value is invalid - update it
+                    if current_tp > Tp_max_us:
+                        self.logger.warning(f"_update_min_tp: Forcing Tp update because current_tp={current_tp:.1f} > Tp_max={Tp_max_us:.1f} (invalid)")
+                        self._tp_manually_set = False  # Reset flag if value is invalid
+                    self.Tp_spin.blockSignals(True)
+                    self.Tp_spin.setValue(Tp_recommended_us)
+                    self.Tp_spin.blockSignals(False)
+                    self.logger.info(f"_update_min_tp: Tp_min={Tp_min_us:.1f} µs (for D_min={D_min}m), Tp_optimal={Tp_optimal_us:.1f} µs (for D_target={D_target:.1f}m), Tp_recommended={Tp_recommended_us:.1f} µs")
             
         except Exception as e:
             self.logger.warning(f"Error calculating Tp duration: {e}")
@@ -1660,21 +1852,49 @@ class MainWindow(QMainWindow):
         """Handler for pulse duration change - recalculates accuracy."""
         Tp = self.Tp_spin.value()
         self.logger.info(f"_on_tp_changed: Tp={Tp}, signalsBlocked={self.Tp_spin.signalsBlocked()}")
+        
+        # If Tp was changed manually (not by "Calculate Optimal Tp" or _update_min_tp),
+        # reset the _tp_manually_set flag so that _update_min_tp can update it if needed
+        # We check if signals are not blocked to distinguish manual changes from programmatic ones
+        if not self.Tp_spin.signalsBlocked():
+            self._tp_manually_set = False
+            self.logger.info(f"_on_tp_changed: Reset _tp_manually_set=False (user manually changed Tp)")
+        
         self._update_accuracy_info()
     
     def _on_sample_rate_changed(self, value: float):
-        """Handler for sample rate change - validates against f_end."""
-        self.logger.info(f"_on_sample_rate_changed: sample_rate={value}, signalsBlocked={self.sample_rate_spin.signalsBlocked()}")
+        """Handler for sample rate change - doesn't validate or adjust during typing."""
+        # Don't validate or adjust during typing - just save settings
+        # Validation will happen in _on_sample_rate_editing_finished when user finishes editing
+        # Minimum is updated only in _on_chirp_frequency_changed when f_end changes
+        # This allows user to type intermediate values (like 100000) without immediate correction
+        pass
+    
+    def _on_sample_rate_editing_finished(self):
+        """Handler for when user finishes editing sample rate - validates and corrects if needed."""
+        if self.sample_rate_spin.signalsBlocked():
+            return
+        
+        value = self.sample_rate_spin.value()
         f_end = self.f_end_spin.value()
         min_sample_rate = 2 * f_end
+        
+        self.logger.info(f"_on_sample_rate_editing_finished: sample_rate={value}, f_end={f_end}, min_sample_rate={min_sample_rate}, value >= min: {value >= min_sample_rate}")
+        
+        # Only adjust value if it's below minimum (after user finished editing)
         if value < min_sample_rate:
-            # Auto-adjust to minimum required
+            # Auto-adjust to minimum required only if value is below minimum
+            self.logger.warning(f"_on_sample_rate_editing_finished: value {value} < min {min_sample_rate}, adjusting to {min_sample_rate}")
             self.sample_rate_spin.blockSignals(True)
             self.sample_rate_spin.setValue(min_sample_rate)
             self.sample_rate_spin.blockSignals(False)
             QMessageBox.warning(self, "Warning", 
                              f"Sample rate must be >= 2*f_end ({min_sample_rate:.0f} Hz). "
                              f"Adjusted to {min_sample_rate:.0f} Hz.")
+        else:
+            # Value is valid (>= minimum), allow it without any adjustment
+            self.logger.info(f"_on_sample_rate_editing_finished: value {value} >= min {min_sample_rate}, allowing it")
+        # This allows user to set any value >= minimum, including 1 MHz, 2 MHz, etc.
     
     def _on_environment_changed(self):
         """Handler for environment parameters change - recalculates Tp and accuracy."""
@@ -1814,13 +2034,33 @@ class MainWindow(QMainWindow):
             # Get optimization strategy
             optimization_strategy = self.optimization_strategy_combo.currentData() if hasattr(self, 'optimization_strategy_combo') else "max_tp_min_vga"
             
+            # Get limit_tp_for_fast_calculation checkbox state
+            limit_tp = self.limit_tp_fast_calc_checkbox.isChecked() if hasattr(self, 'limit_tp_fast_calc_checkbox') else False
+            
+            # Validate and auto-correct sample_rate to satisfy Nyquist criterion (sample_rate >= 2*f_end)
+            min_sample_rate = 2 * signal.f_end
+            if signal.sample_rate < min_sample_rate:
+                self.logger.warning(f"sample_rate ({signal.sample_rate} Hz) < 2*f_end ({min_sample_rate} Hz). "
+                                  f"Auto-correcting to {min_sample_rate} Hz to satisfy Nyquist criterion.")
+                # Update signal with corrected sample_rate
+                signal_dict = signal.dict()
+                signal_dict['sample_rate'] = min_sample_rate
+                from core.dto import SignalDTO
+                signal = SignalDTO(**signal_dict)
+                # Also update GUI widget to reflect the change
+                if hasattr(self, 'sample_rate_spin'):
+                    self.sample_rate_spin.blockSignals(True)
+                    self.sample_rate_spin.setValue(min_sample_rate)
+                    self.sample_rate_spin.blockSignals(False)
+            
             return InputDTO(
                 hardware=hardware,
                 signal=signal,
                 environment=environment,
                 range=range_dto,
                 target_snr=target_snr,
-                optimization_strategy=optimization_strategy
+                optimization_strategy=optimization_strategy,
+                limit_tp_for_fast_calculation=limit_tp
             )
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error creating input data: {e}")
@@ -1831,6 +2071,20 @@ class MainWindow(QMainWindow):
         input_dto = self._get_input_dto()
         if input_dto is None:
             return
+        
+        # Check if Tp limit is enabled and Tp > 1s
+        limit_tp = getattr(input_dto, 'limit_tp_for_fast_calculation', False)
+        if limit_tp and input_dto.signal.Tp > 1_000_000:
+            original_tp_sec = input_dto.signal.Tp / 1e6
+            self.logger.info(f"[FAST CALC] Tp limit enabled: {original_tp_sec:.2f} s will be limited to 1.0 s")
+            # Show info message to user
+            QMessageBox.information(
+                self, 
+                "Fast Calculation Mode",
+                f"Tp limit enabled: {original_tp_sec:.2f} s will be limited to 1.0 s for faster calculation.\n\n"
+                f"Signal samples will be reduced from ~{int(input_dto.signal.sample_rate * original_tp_sec):,} "
+                f"to ~{int(input_dto.signal.sample_rate * 1.0):,} samples."
+            )
         
         self.simulate_btn.setEnabled(False)
         self.simulate_btn.setText("Running...")
@@ -1978,6 +2232,9 @@ Success: {'Yes' if output_dto.success else 'No'}
             self.Tp_spin.blockSignals(True)
             self.Tp_spin.setValue(suggested_tp)
             self.Tp_spin.blockSignals(False)
+            # Reset _tp_manually_set flag since this is automatic application from optimizer
+            # (not manual user action via "Calculate Optimal Tp")
+            self._tp_manually_set = False
             changes_applied.append(f"Tp: {suggested_tp:.2f} µs")
         
         if 'f_start' in recommendations.suggested_changes:
@@ -1997,6 +2254,22 @@ Success: {'Yes' if output_dto.success else 'No'}
             self.f_end_spin.setValue(suggested_f_end)
             self.f_end_spin.blockSignals(False)
             changes_applied.append(f"f_end: {suggested_f_end:.2f} Hz")
+        
+        if 'VGA_gain' in recommendations.suggested_changes:
+            suggested_vga = recommendations.suggested_changes['VGA_gain']
+            # Ensure within valid range (get from VGA combo or use defaults)
+            if hasattr(self, 'vga_combo') and self.vga_combo.currentText():
+                try:
+                    vga_params = self.data_provider.get_vga(self.vga_combo.currentText())
+                    vga_min = vga_params.get('G_min', 0)
+                    vga_max = vga_params.get('G_max', 60)
+                    suggested_vga = max(vga_min, min(suggested_vga, vga_max))
+                except:
+                    pass  # Use suggested value as-is if can't get params
+            # Apply VGA gain to Signal Path widget (this will be used in next simulation)
+            if hasattr(self, 'signal_path_widget'):
+                self.signal_path_widget.set_vga_gain(suggested_vga)
+            changes_applied.append(f"VGA gain: {suggested_vga:.1f} dB")
         
         # VGA gain changes need to be applied manually (user adjusts in Signal Path widget)
         if recommendations.increase_G_VGA or recommendations.decrease_G_VGA:
@@ -2688,7 +2961,13 @@ Success: {'Yes' if output_dto.success else 'No'}
                 self.tgc_plot.setXRange(D_min, D_max)
                 vga_gain_min = vga_params.get('G_min', 0.0)
                 vga_gain_max = vga_params.get('G_max', 60.0)
-                self.tgc_plot.setYRange(max(0, np.min(VGA_gain_valid) - 5), min(vga_gain_max, np.max(VGA_gain_valid) + 5))
+                
+                # Ensure Y-axis range includes both VGA gain limits and the curve
+                y_min_curve = np.min(VGA_gain_valid)
+                y_max_curve = np.max(VGA_gain_valid)
+                y_min = max(0, min(vga_gain_min, y_min_curve) - 5)
+                y_max = max(vga_gain_max, y_max_curve) + 5
+                self.tgc_plot.setYRange(y_min, y_max)
                 
                 # Add horizontal line for VGA gain limits
                 self.tgc_plot.addLine(y=vga_gain_max, pen=pg.mkPen(color='r', style=Qt.DashLine), 
@@ -2734,51 +3013,70 @@ Success: {'Yes' if output_dto.success else 'No'}
         self._update_signal_path()
     
     def _run_optimization(self):
-        """Runs iterative optimization."""
+        """Runs iterative optimization in a separate thread."""
         input_dto = self._get_input_dto()
         if input_dto is None:
             return
         
-        max_iterations = 10
-        iteration = 0
+        # Get VGA gain from signal_path_widget (same as in _run_simulation)
+        vga_gain = self.signal_path_widget.get_vga_gain() if hasattr(self, 'signal_path_widget') else None
         
-        while iteration < max_iterations:
-            output_dto = self.simulator.simulate(input_dto, iteration=iteration, absorption_only=True)
-            self.simulation_history.append((input_dto, output_dto))
-            
-            if output_dto.success:
-                QMessageBox.information(self, "Success", 
-                                       f"Optimization completed in {iteration + 1} iterations")
-                self._display_results(input_dto, output_dto)
-                self._display_recommendations(output_dto)
-                self._plot_results(input_dto, output_dto)
-                return
-            
-            # Apply recommendations
-            rec = output_dto.recommendations
-            changes = self.simulator.optimizer.suggest_parameter_changes(input_dto, rec)
-            
-            # Update parameters
-            if 'Tp' in changes:
-                self.Tp_spin.setValue(changes['Tp'])
-            if 'f_start' in changes:
-                self.f_start_spin.setValue(changes['f_start'])
-            if 'f_end' in changes:
-                self.f_end_spin.setValue(changes['f_end'])
-            
-            # Create new DTO
-            input_dto = self._get_input_dto()
-            if input_dto is None:
-                return
-            
-            iteration += 1
+        # Disable button during optimization
+        self.optimize_btn.setEnabled(False)
+        self.optimize_btn.setText("Optimizing...")
         
-        QMessageBox.warning(self, "Warning", 
-                           f"Maximum number of iterations reached ({max_iterations})")
+        # Run optimization in separate thread
+        self.opt_thread = OptimizationThread(self.simulator, input_dto, max_iterations=10, vga_gain=vga_gain)
+        self.opt_thread.progress.connect(self._on_optimization_progress)
+        self.opt_thread.finished.connect(self._on_optimization_finished)
+        self.opt_thread.start()
+    
+    def _on_optimization_progress(self, iteration: int, message: str):
+        """Handler for optimization progress updates."""
+        self.optimize_btn.setText(f"Optimizing... ({message})")
+        self.logger.info(f"Optimization progress: {message}")
+    
+    def _on_optimization_finished(self, input_dto: InputDTO, output_dto: OutputDTO):
+        """Handler for optimization completion."""
+        self.optimize_btn.setEnabled(True)
+        self.optimize_btn.setText("Optimize")
+        
+        # DO NOT automatically apply recommendations here
+        # Recommendations should only be applied when user clicks "Apply Recommendations" button
+        # This allows user to review recommendations before applying them
+        
+        # Save to history
+        self.simulation_history.append((input_dto, output_dto))
+        
+        # Get current values from GUI to show accurate recommendations
+        # This ensures recommendations reflect current GUI state, not just last iteration
+        current_input_dto = self._get_input_dto()
+        if current_input_dto is not None:
+            # Update recommendations message with current GUI values if they differ
+            # This helps user understand what the recommendations are based on
+            if current_input_dto.signal.Tp != input_dto.signal.Tp:
+                # Current GUI Tp differs from optimization result
+                # Re-analyze with current GUI values to get accurate recommendations
+                from core.optimizer import Optimizer
+                temp_optimizer = Optimizer(self.data_provider)
+                # Create a temporary output_dto with current simulation results
+                # but use current GUI input values for recommendations
+                updated_recommendations = temp_optimizer.analyze_results(current_input_dto, output_dto)
+                output_dto.recommendations = updated_recommendations
+        
+        # Display results
         self._display_results(input_dto, output_dto)
         self._display_recommendations(output_dto)
         self._plot_results(input_dto, output_dto)
         self._display_signal_path(input_dto)
+        
+        # Show completion message
+        if output_dto.success:
+            QMessageBox.information(self, "Optimization Complete", 
+                                   "Optimization completed successfully. Parameters have been updated.")
+        else:
+            QMessageBox.warning(self, "Optimization Incomplete", 
+                               "Optimization did not converge. Check recommendations for suggestions.")
     
     def _export_results(self):
         """Exports results."""

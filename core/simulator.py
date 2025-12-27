@@ -132,6 +132,7 @@ class Simulator:
         
         # Validation
         errors = self._validate_input(input_dto)
+        
         if errors:
             output_dto = OutputDTO(
                 D_measured=0.0,
@@ -160,6 +161,16 @@ class Simulator:
             channel = ChannelModel(self.water_model)
             range_estimator = RangeEstimator(dsp, self.water_model)
             
+            # Get limit_tp_for_fast_calculation flag from input_dto
+            limit_tp = getattr(input_dto, 'limit_tp_for_fast_calculation', False)
+            
+            # Log if limit is applied (for debugging)
+            if limit_tp and input_dto.signal.Tp > 1_000_000:  # Tp > 1 second
+                original_tp_sec = input_dto.signal.Tp / 1e6
+                self.logger.info(f"[FAST CALC] Tp limited to 1.0 s (original: {original_tp_sec:.2f} s). "
+                                f"Signal samples reduced from ~{int(input_dto.signal.sample_rate * original_tp_sec):,} "
+                                f"to ~{int(input_dto.signal.sample_rate * 1.0):,} samples.")
+            
             # Generate CHIRP signal for visualization with fixed sampling frequency
             # This ensures signal shape doesn't change when ADC is changed
             # ADC only affects quantization, not signal generation for visualization
@@ -168,7 +179,8 @@ class Simulator:
                 input_dto.signal.f_end,
                 input_dto.signal.Tp,
                 self.VISUALIZATION_FS,  # Fixed frequency for visualization
-                input_dto.signal.window
+                input_dto.signal.window,
+                limit_tp_for_fast_calc=limit_tp
             )
             
             # Generate CHIRP signal for actual simulation with signal sample_rate
@@ -178,7 +190,8 @@ class Simulator:
                 input_dto.signal.f_end,
                 input_dto.signal.Tp,
                 input_dto.signal.sample_rate,  # Signal sampling frequency from input
-                input_dto.signal.window
+                input_dto.signal.window,
+                limit_tp_for_fast_calc=limit_tp
             )
             
             # Model transmission through transducer
