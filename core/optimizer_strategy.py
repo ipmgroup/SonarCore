@@ -25,11 +25,12 @@ def apply_max_tp_min_vga_strategy(
     
     # Calculate maximum Tp (80% of round-trip time for D_target)
     try:
-        Tp_max_for_D_target = calculator.calculate_min_pulse_duration(
+        Tp_max_for_D_target = calculator.calculate_optimal_pulse_duration(
             D_target,
             input_dto.environment.T,
             input_dto.environment.S,
-            input_dto.environment.z
+            input_dto.environment.z,
+            min_tp=None
         )
         optimal_tp = Tp_max_for_D_target
         
@@ -105,11 +106,12 @@ def apply_min_tp_for_snr_strategy(
                 input_dto.environment.S,
                 input_dto.environment.z
             )
-            Tp_max_physical_D_target = calculator.calculate_min_pulse_duration(
+            Tp_max_physical_D_target = calculator.calculate_optimal_pulse_duration(
                 D_target,
                 input_dto.environment.T,
                 input_dto.environment.S,
-                input_dto.environment.z
+                input_dto.environment.z,
+                min_tp=None
             )
             
             # Ensure optimal_tp is within physical limits

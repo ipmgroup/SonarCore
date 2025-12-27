@@ -22,6 +22,43 @@ class SignalCalculator:
         """Initialize calculator."""
         self.water_model = WaterModel()
     
+    def _calculate_max_tp_from_distance(self, D: float, T: float, S: float, z: float) -> float:
+        """
+        Common helper: calculates maximum allowed pulse duration (80% of round-trip time) for given distance.
+        
+        Formula: Tp_max = 0.8 * (2 * D / c)
+        where c is sound speed in water
+        
+        Args:
+            D: Range/distance, m
+            T: Temperature, °C
+            S: Salinity, PSU
+            z: Depth, m
+        
+        Returns:
+            Maximum allowed pulse duration, µs
+        """
+        # Calculate sound speed
+        P = self.water_model.calculate_pressure(z)
+        c = self.water_model.calculate_sound_speed(T, S, P)
+        
+        # Calculate propagation time (round-trip)
+        # TOF = 2 * D / c (seconds)
+        TOF_sec = 2.0 * D / c
+        
+        # Transmission time must be 80% of round-trip time
+        # Tp_max = 0.8 * TOF (80% of round-trip time)
+        pulse_duration_factor = 0.8
+        Tp_max_sec = TOF_sec * pulse_duration_factor
+        
+        # Convert to microseconds
+        Tp_max_us = Tp_max_sec * 1e6
+        
+        # Ensure minimum 1 µs to avoid numerical issues
+        Tp_max_us = max(1.0, Tp_max_us)
+        
+        return Tp_max_us
+    
     def calculate_min_pulse_duration(self, D_min: float, T: float, S: float, z: float) -> float:
         """
         Calculates maximum allowed pulse duration based on minimum range.
@@ -41,27 +78,7 @@ class SignalCalculator:
         Returns:
             Maximum allowed pulse duration, µs
         """
-        # Calculate sound speed
-        P = self.water_model.calculate_pressure(z)
-        c = self.water_model.calculate_sound_speed(T, S, P)
-        
-        # Calculate propagation time to minimum range (round-trip)
-        # TOF = 2 * D_min / c (seconds)
-        TOF_min_sec = 2.0 * D_min / c
-        
-        # Transmission time must be 80% of round-trip time
-        # Tp_max = 0.8 * TOF (80% of round-trip time)
-        pulse_duration_factor = 0.8
-        Tp_max_sec = TOF_min_sec * pulse_duration_factor
-        
-        # Convert to microseconds
-        Tp_max_us = Tp_max_sec * 1e6
-        
-        # No artificial limits - only physical constraint (80% of round-trip time)
-        # Minimum is still enforced to avoid division by zero, but no maximum limit
-        Tp_max_us = max(1.0, Tp_max_us)  # Minimum 1 µs to avoid issues
-        
-        return Tp_max_us
+        return self._calculate_max_tp_from_distance(D_min, T, S, z)
     
     def _center_frequencies_around_f0(self, f_min: float, f_max: float, f_0: float,
                                       used_bw: float) -> Tuple[float, float]:
@@ -134,15 +151,8 @@ class SignalCalculator:
         Returns:
             Optimal pulse duration, µs
         """
-        # Calculate sound speed
-        P = self.water_model.calculate_pressure(z)
-        c = self.water_model.calculate_sound_speed(T, S, P)
-        
-        # Calculate propagation time to target range (round-trip)
-        TOF_target_sec = 2.0 * D_target / c
-        
         # Maximum duration for this distance (80% of TOF)
-        Tp_max_us = TOF_target_sec * 0.8 * 1e6
+        Tp_max_us = self._calculate_max_tp_from_distance(D_target, T, S, z)
         
         # Optimal duration: use maximum for good SNR
         # (can use less, but for maximum SNR use maximum)
@@ -152,7 +162,6 @@ class SignalCalculator:
         if min_tp is not None:
             Tp_optimal_us = max(min_tp, Tp_optimal_us)
         
-        # No artificial maximum limit - only physical constraint (80% of TOF) applies
         # Ensure minimum 1 µs to avoid numerical issues
         Tp_optimal_us = max(1.0, Tp_optimal_us)
         
@@ -536,7 +545,7 @@ class SignalCalculator:
         optimal_tp = current_tp * tp_reduction_factor
         
         # Check physical constraint: Tp must not exceed 80% of round-trip time at D_target
-        Tp_max_us = self.calculate_optimal_pulse_duration(D_target, T, S, z, min_tp=None)
+        Tp_max_us = self._calculate_max_tp_from_distance(D_target, T, S, z)
         optimal_tp = min(optimal_tp, Tp_max_us)
         
         # Ensure minimum 1 µs
@@ -660,13 +669,8 @@ class SignalCalculator:
         Returns:
             Optimal pulse duration, µs
         """
-        # Calculate sound speed for maximum Tp limit
-        P = self.water_model.calculate_pressure(z)
-        c = self.water_model.calculate_sound_speed(T, S, P)
-        
         # Maximum allowed duration (80% of round-trip time)
-        TOF_sec = 2.0 * D_target / c
-        Tp_max_us = TOF_sec * 0.8 * 1e6
+        Tp_max_us = self._calculate_max_tp_from_distance(D_target, T, S, z)
         
         # Get parameters
         S_TX = transducer_params.get('S_TX', 170)  # dB re 1µPa/V @ 1m
@@ -678,8 +682,6 @@ class SignalCalculator:
         
         # Calculate components needed for Tp calculation
         # Use same formulas as in _calculate_snr_from_sonar_equation
-        S_TX = transducer_params.get('S_TX', 170)
-        bottom_reflection = hardware_params.get('bottom_reflection', -15)
         SL = S_TX + 20 * np.log10(tx_voltage)
         TS = -bottom_reflection
         DI = 0.0

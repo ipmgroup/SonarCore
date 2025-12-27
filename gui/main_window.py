@@ -1409,47 +1409,24 @@ class MainWindow(QMainWindow):
                 'bottom_reflection': bottom_reflection
             }
             
-            # Get current Tp
-            current_tp = self.Tp_spin.value()
-            
-            # Check if we have results from last simulation
-            # If current SNR is above target, we need to REDUCE Tp
-            # If current SNR is below target or unknown, we calculate minimum Tp needed
-            current_snr = None
-            if hasattr(self, 'last_output_dto') and self.last_output_dto:
-                current_snr = self.last_output_dto.SNR_ADC
-            
             calculator = SignalCalculator()
             
-            # If we have current SNR and it's above target, use reduction formula
-            if current_snr is not None and current_snr > target_snr * 1.05:  # 5% margin
-                # Use Core method to calculate Tp reduction
-                optimal_tp = calculator.calculate_tp_reduction_for_snr(
-                    current_tp=current_tp,
-                    current_snr_db=current_snr,
-                    target_snr_db=target_snr,
-                    D_target=D_target,
-                    T=T,
-                    S=S,
-                    z=z
-                )
-                
-                calculation_method = "Reduction from current Tp (SNR above target)"
-            else:
-                # Calculate minimum Tp needed to achieve target SNR (from scratch)
-                optimal_tp = calculator.calculate_optimal_tp_for_snr(
-                    D_target=D_target,
-                    target_snr_db=target_snr,
-                    transducer_params=transducer_params,
-                    hardware_params=hardware_params,
-                    T=T,
-                    S=S,
-                    z=z,
-                    f_start=f_start,
-                    f_end=f_end,
-                    tx_voltage=tx_voltage
-                )
-                calculation_method = "Minimum Tp to achieve target SNR"
+            # Always calculate minimum Tp needed to achieve target SNR (from scratch)
+            # This ensures consistent results regardless of previous simulation state
+            # NOTE: calculate_tp_reduction_for_snr is used by optimizer, not by "Calculate Optimal Tp" button
+            optimal_tp = calculator.calculate_optimal_tp_for_snr(
+                D_target=D_target,
+                target_snr_db=target_snr,
+                transducer_params=transducer_params,
+                hardware_params=hardware_params,
+                T=T,
+                S=S,
+                z=z,
+                f_start=f_start,
+                f_end=f_end,
+                tx_voltage=tx_voltage
+            )
+            calculation_method = "Minimum Tp to achieve target SNR"
             
             # Update Tp spinbox
             self.Tp_spin.setValue(optimal_tp)
@@ -1458,13 +1435,12 @@ class MainWindow(QMainWindow):
             Tp_optimal_for_target = calculator.calculate_optimal_pulse_duration(D_target, T, S, z, min_tp=None)
             
             # Show message
+            current_tp = self.Tp_spin.value()  # Get current Tp for display
             message = f"Optimal pulse duration: {optimal_tp:.1f} µs\n\n"
             message += f"Calculated for:\n"
             message += f"  • Distance: {D_target:.1f} m\n"
             message += f"  • Target SNR: {target_snr:.1f} dB\n"
-            if current_snr is not None:
-                message += f"  • Current SNR: {current_snr:.2f} dB\n"
-            message += f"  • Current Tp: {current_tp:.1f} µs\n"
+            message += f"  • Previous Tp: {current_tp:.1f} µs\n"
             message += f"  • Method: {calculation_method}\n"
             message += f"\nNote:\n"
             message += f"  • This is the MINIMUM Tp to achieve target SNR\n"
