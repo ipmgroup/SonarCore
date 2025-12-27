@@ -593,6 +593,18 @@ class MainWindow(QMainWindow):
         
         tabs.addTab(depth_tp_tab, "Depth vs Tp")
         
+        # TGC (Time Gain Control) tab - graph showing VGA gain vs distance
+        tgc_tab = QWidget()
+        tgc_layout = QVBoxLayout(tgc_tab)
+        
+        self.tgc_plot = pg.PlotWidget(title="Time Gain Control: VGA Gain vs Distance")
+        self.tgc_plot.setLabel('left', 'VGA Gain', units='dB')
+        self.tgc_plot.setLabel('bottom', 'Distance', units='m')
+        self.tgc_plot.showGrid(x=True, y=True, alpha=0.3)
+        tgc_layout.addWidget(self.tgc_plot)
+        
+        tabs.addTab(tgc_tab, "TGC")
+        
         layout.addWidget(tabs)
         
         return panel
@@ -1849,6 +1861,7 @@ class MainWindow(QMainWindow):
         self._display_signals(input_dto, output_dto)
         self._plot_results(input_dto, output_dto)
         self._plot_depth_vs_tp(input_dto)
+        self._plot_tgc(input_dto)
         self._display_signal_path(input_dto)
     
     def _display_results(self, input_dto: InputDTO, output_dto: OutputDTO):
@@ -2601,6 +2614,94 @@ Success: {'Yes' if output_dto.success else 'No'}
             self.logger.error(f"Error plotting depth vs Tp: {e}", exc_info=True)
             self.depth_tp_plot.clear()
             self.depth_tp_plot.addItem(pg.TextItem(f'Error: {str(e)}', anchor=(0.5, 0.5), color='r'))
+    
+    def _plot_tgc(self, input_dto: InputDTO):
+        """Plots Time Gain Control curve: VGA gain vs distance."""
+        try:
+            # Clear previous plot
+            self.tgc_plot.clear()
+            
+            # Check if all hardware is selected
+            if not input_dto.hardware.transducer_id or not input_dto.hardware.lna_id or \
+               not input_dto.hardware.vga_id or not input_dto.hardware.adc_id:
+                self.tgc_plot.addItem(pg.TextItem('Please select all hardware components', anchor=(0.5, 0.5)))
+                return
+            
+            # Get hardware parameters
+            transducer_params = self.data_provider.get_transducer(input_dto.hardware.transducer_id)
+            lna_params = self.data_provider.get_lna(input_dto.hardware.lna_id)
+            vga_params = self.data_provider.get_vga(input_dto.hardware.vga_id)
+            adc_params = self.data_provider.get_adc(input_dto.hardware.adc_id)
+            
+            # Get LNA gain from signal_path_widget if available, otherwise from data
+            if hasattr(self, 'signal_path_widget'):
+                lna_gain = self.signal_path_widget.get_lna_gain()
+                lna_nf = self.signal_path_widget.get_lna_nf()
+            else:
+                lna_gain = lna_params.get('G_LNA', lna_params.get('G', 20.0))
+                lna_nf = lna_params.get('NF_LNA', lna_params.get('NF', 2.0))
+            
+            # Prepare hardware params
+            hardware_params = {
+                'lna_gain': lna_gain,
+                'lna_nf': lna_nf,
+                'bottom_reflection': input_dto.environment.bottom_reflection
+            }
+            
+            # Get signal and environment parameters
+            target_snr = input_dto.target_snr
+            f_start = input_dto.signal.f_start
+            f_end = input_dto.signal.f_end
+            Tp_us = input_dto.signal.Tp
+            T = input_dto.environment.T
+            S = input_dto.environment.S
+            z = input_dto.environment.z
+            D_min = input_dto.range.D_min
+            D_max = input_dto.range.D_max
+            
+            # Get TX voltage
+            tx_voltage = transducer_params.get('V_max', transducer_params.get('V_nominal', 100.0))
+            
+            # Calculate TGC curve
+            Distance_array, VGA_gain_array = self.signal_calculator.calculate_tgc_curve(
+                D_min, D_max, target_snr,
+                transducer_params, hardware_params,
+                adc_params, vga_params,
+                T, S, z, f_start, f_end, Tp_us,
+                tx_voltage=tx_voltage,
+                num_points=200
+            )
+            
+            # Filter out invalid values
+            valid_mask = np.isfinite(VGA_gain_array) & (VGA_gain_array >= 0)
+            if np.any(valid_mask):
+                Distance_valid = Distance_array[valid_mask]
+                VGA_gain_valid = VGA_gain_array[valid_mask]
+                
+                # Plot TGC curve
+                self.tgc_plot.plot(Distance_valid, VGA_gain_valid, pen=pg.mkPen(color='b', width=2))
+                
+                # Add labels
+                self.tgc_plot.setTitle(f"Time Gain Control: VGA Gain vs Distance (Target SNR: {target_snr:.1f} dB)")
+                
+                # Set axis ranges
+                self.tgc_plot.setXRange(D_min, D_max)
+                vga_gain_min = vga_params.get('G_min', 0.0)
+                vga_gain_max = vga_params.get('G_max', 60.0)
+                self.tgc_plot.setYRange(max(0, np.min(VGA_gain_valid) - 5), min(vga_gain_max, np.max(VGA_gain_valid) + 5))
+                
+                # Add horizontal line for VGA gain limits
+                self.tgc_plot.addLine(y=vga_gain_max, pen=pg.mkPen(color='r', style=Qt.DashLine), 
+                                      label=f'VGA Max: {vga_gain_max:.1f} dB')
+                self.tgc_plot.addLine(y=vga_gain_min, pen=pg.mkPen(color='g', style=Qt.DashLine), 
+                                      label=f'VGA Min: {vga_gain_min:.1f} dB')
+            else:
+                self.tgc_plot.addItem(pg.TextItem('No valid TGC curve calculated', anchor=(0.5, 0.5)))
+            
+        except Exception as e:
+            self.logger.error(f"Error plotting TGC: {e}", exc_info=True)
+            self.tgc_plot.clear()
+            self.tgc_plot.addItem(pg.TextItem(f'Error: {str(e)}', anchor=(0.5, 0.5), color='r'))
     
     def _display_signal_path(self, input_dto: InputDTO):
         """Displays signal path as diagram."""

@@ -835,4 +835,143 @@ class SignalCalculator:
             )
         
         return Tp_array, Depth_array
+    
+    def calculate_tgc_curve(self, D_min: float, D_max: float, target_snr_db: float,
+                           transducer_params: Dict, hardware_params: Dict,
+                           adc_params: Dict, vga_params: Dict,
+                           T: float, S: float, z: float,
+                           f_start: float, f_end: float, Tp_us: float,
+                           tx_voltage: float = 100.0,
+                           num_points: int = 200) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Calculates Time Gain Control (TGC) curve: optimal VGA gain vs distance.
+        
+        For each distance, calculates VGA gain that:
+        1. Achieves target SNR or better
+        2. Avoids ADC clipping
+        
+        Args:
+            D_min: Minimum distance, m
+            D_max: Maximum distance, m
+            target_snr_db: Target SNR, dB
+            transducer_params: Transducer parameters
+            hardware_params: Hardware parameters (LNA gain, LNA NF, etc.)
+            adc_params: ADC parameters (V_FS, bits, etc.)
+            vga_params: VGA parameters (G_min, G_max, etc.)
+            T: Temperature, °C
+            S: Salinity, PSU
+            z: Depth, m
+            f_start: CHIRP start frequency, Hz
+            f_end: CHIRP end frequency, Hz
+            Tp_us: Pulse duration, µs
+            tx_voltage: Transmitter voltage, V
+            num_points: Number of points in curve
+        
+        Returns:
+            Tuple (Distance_array, VGA_gain_array) - Distance_array in m, VGA_gain_array in dB
+        """
+        Distance_array = np.linspace(D_min, D_max, num_points)
+        VGA_gain_array = np.zeros_like(Distance_array)
+        
+        # Get parameters
+        S_TX = transducer_params.get('S_TX', 170)  # dB re 1µPa/V @ 1m
+        S_RX = transducer_params.get('S_RX', -193)  # dB re 1V/µPa
+        bottom_reflection = hardware_params.get('bottom_reflection', -15)  # dB
+        
+        lna_gain = hardware_params.get('lna_gain', 20.0)  # dB
+        lna_nf = hardware_params.get('lna_nf', 2.0)  # dB
+        
+        vga_gain_min = vga_params.get('G_min', 0.0)  # dB
+        vga_gain_max = vga_params.get('G_max', 60.0)  # dB
+        
+        adc_v_fs = adc_params.get('V_FS', adc_params.get('V_ref', 2.5))  # V (full scale)
+        adc_bits = adc_params.get('N', adc_params.get('bits', 16))
+        adc_max_voltage = adc_v_fs / 2.0  # Maximum voltage without clipping, V
+        
+        # Calculate bandwidth and center frequency
+        bandwidth = abs(f_end - f_start)  # Hz
+        f_center = (f_start + f_end) / 2
+        Tp_sec = Tp_us * 1e-6  # Convert to seconds
+        
+        # Calculate Source Level
+        SL = S_TX + 20 * np.log10(tx_voltage)  # dB re 1µPa @ 1m
+        
+        # Calculate Target Strength
+        TS = -bottom_reflection  # dB
+        
+        # Calculate Directivity Index
+        DI = 0.0  # dB
+        
+        # Calculate Noise Level (constant for all distances)
+        base_noise_spectrum_level_db = 120.0  # dB re 1µPa @ 1kHz
+        bandwidth_khz = bandwidth / 1000.0 if bandwidth > 0 else 1.0
+        NL = base_noise_spectrum_level_db + 10 * np.log10(bandwidth_khz)
+        if lna_nf > 1.0:
+            NL += (lna_nf - 1.0) * 0.2
+        
+        # Pulse Compression Gain (constant for all distances)
+        BT_product = bandwidth * Tp_sec
+        PG_db = 10 * np.log10(BT_product) if BT_product > 0 else 0
+        
+        for i, D in enumerate(Distance_array):
+            # Calculate Transmission Loss (one-way)
+            spreading_loss_one_way = self.water_model.calculate_spreading_loss(D)
+            absorption_loss_one_way = self.water_model.calculate_absorption_loss(D, f_center, T, S, z)
+            TL = spreading_loss_one_way + absorption_loss_one_way  # One-way TL
+            
+            # Calculate SNR without VGA gain (at LNA output)
+            # SNR = SL + TS + DI - NL - 2TL + PG_db
+            # But we need to account for VGA gain contribution
+            # SNR_with_VGA = SNR_at_LNA + VGA_gain (approximately, for signal)
+            # But noise also gets amplified, so it's more complex
+            
+            # Calculate SNR at LNA output (without VGA)
+            snr_at_lna = SL + TS + DI - NL - 2*TL + PG_db
+            
+            # Calculate signal level at LNA output (in dB re 1µPa)
+            signal_level_at_lna_db = SL + TS - 2*TL + lna_gain  # dB re 1µPa
+            
+            # Convert to voltage at LNA output
+            # S_RX is sensitivity: dB re 1V/µPa
+            # signal_voltage = signal_pressure * 10^(S_RX/20)
+            signal_pressure_at_lna = 10 ** ((signal_level_at_lna_db) / 20)  # µPa (linear)
+            signal_voltage_at_lna = signal_pressure_at_lna * 10 ** (S_RX / 20)  # V (linear)
+            
+            # Calculate required VGA gain for target SNR
+            # SNR scales with signal power, which scales with VGA gain squared
+            # But noise also gets amplified, so net effect: SNR increases with VGA gain
+            # Approximate: SNR_VGA ≈ SNR_LNA + G_VGA (for high SNR cases)
+            # More accurate: SNR_VGA = SNR_LNA + G_VGA - noise_contribution
+            # For TGC, we use simplified model: SNR_VGA ≈ SNR_LNA + G_VGA
+            snr_deficit = target_snr_db - snr_at_lna
+            vga_gain_for_snr = max(0.0, snr_deficit)  # Only increase if needed
+            
+            # Calculate maximum VGA gain to avoid clipping
+            # Signal voltage after VGA: V_VGA = V_LNA * 10^(G_VGA/20)
+            # To avoid clipping: V_VGA < ADC_max_voltage
+            # G_VGA_max = 20*log10(ADC_max_voltage / V_LNA)
+            if signal_voltage_at_lna > 0:
+                vga_gain_max_for_no_clip = 20 * np.log10(adc_max_voltage / signal_voltage_at_lna)
+            else:
+                vga_gain_max_for_no_clip = vga_gain_max
+            
+            # TGC principle: compensate for transmission loss to maintain constant signal level
+            # Ideal TGC: G_VGA = 2*TL (compensate round-trip loss)
+            # But also need to ensure SNR >= target and no clipping
+            tgc_compensation = 2 * TL  # Compensate for round-trip loss
+            
+            # Choose optimal VGA gain:
+            # 1. Must be >= gain for SNR
+            # 2. Must be <= gain for no clipping
+            # 3. Should be close to TGC compensation (2*TL) if possible
+            # 4. Must be within VGA limits
+            optimal_vga_gain = max(vga_gain_for_snr, tgc_compensation)  # At least compensate for loss or meet SNR
+            optimal_vga_gain = min(optimal_vga_gain, vga_gain_max_for_no_clip, vga_gain_max)  # But not too high
+            
+            # Ensure it's within VGA limits
+            optimal_vga_gain = max(vga_gain_min, optimal_vga_gain)
+            
+            VGA_gain_array[i] = optimal_vga_gain
+        
+        return Distance_array, VGA_gain_array
 
