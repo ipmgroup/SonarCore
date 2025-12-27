@@ -347,22 +347,52 @@ class Simulator:
             ref_len_vis = len(reference_signal_vis)
             
             # Resample signals after LNA and VGA to visualization sampling frequency
-            # They were generated with signal sample_rate, so we need to resample them
+            # They were processed at ADC sampling rate, so we need to resample them
+            # Find echo start (TOF) and show only echo, not echo with delay
+            # Calculate TOF for D_target (round trip)
+            c = self.water_model.calculate_sound_speed(
+                input_dto.environment.T,
+                input_dto.environment.S,
+                self.water_model.calculate_pressure(input_dto.environment.z)
+            )
+            tof_round_trip = 2 * D_target / c  # Round trip time of flight
+            # Calculate delay in samples at ADC sampling rate (where signals were processed)
+            delay_samples_adc = int(tof_round_trip * adc_fs)  # Delay in ADC samples
+            Tp_samples_adc = int(input_dto.signal.Tp * 1e-6 * adc_fs)  # Echo duration in ADC samples
+            
             if len(signal_after_lna) > 0:
-                # Resample from signal sample_rate to visualization f_s
-                num_samples_vis = int(len(signal_after_lna) * self.VISUALIZATION_FS / input_dto.signal.sample_rate)
-                signal_after_lna_vis = scipy_signal.resample(signal_after_lna, num_samples_vis)
-                # Trim to reference length
-                signal_after_lna_vis = signal_after_lna_vis[-ref_len_vis:] if len(signal_after_lna_vis) >= ref_len_vis else signal_after_lna_vis
+                # Extract only echo (from delay_samples_adc to delay_samples_adc + Tp_samples_adc)
+                # This is done BEFORE resampling to avoid interpolation artifacts
+                if delay_samples_adc < len(signal_after_lna):
+                    echo_end = min(delay_samples_adc + Tp_samples_adc, len(signal_after_lna))
+                    signal_after_lna_echo = signal_after_lna[delay_samples_adc:echo_end]
+                    # Now resample the echo to visualization f_s
+                    num_samples_vis = int(len(signal_after_lna_echo) * self.VISUALIZATION_FS / adc_fs)
+                    if num_samples_vis > 0:
+                        signal_after_lna_vis = scipy_signal.resample(signal_after_lna_echo, num_samples_vis)
+                    else:
+                        signal_after_lna_vis = np.array([])
+                else:
+                    # If delay is beyond signal length, return empty
+                    signal_after_lna_vis = np.array([])
             else:
                 signal_after_lna_vis = signal_after_lna
                 
             if len(signal_after_vga) > 0:
-                # Resample from signal sample_rate to visualization f_s
-                num_samples_vis = int(len(signal_after_vga) * self.VISUALIZATION_FS / input_dto.signal.sample_rate)
-                signal_after_vga_vis = scipy_signal.resample(signal_after_vga, num_samples_vis)
-                # Trim to reference length
-                signal_after_vga_vis = signal_after_vga_vis[-ref_len_vis:] if len(signal_after_vga_vis) >= ref_len_vis else signal_after_vga_vis
+                # Extract only echo (from delay_samples_adc to delay_samples_adc + Tp_samples_adc)
+                # This is done BEFORE resampling to avoid interpolation artifacts
+                if delay_samples_adc < len(signal_after_vga):
+                    echo_end = min(delay_samples_adc + Tp_samples_adc, len(signal_after_vga))
+                    signal_after_vga_echo = signal_after_vga[delay_samples_adc:echo_end]
+                    # Now resample the echo to visualization f_s
+                    num_samples_vis = int(len(signal_after_vga_echo) * self.VISUALIZATION_FS / adc_fs)
+                    if num_samples_vis > 0:
+                        signal_after_vga_vis = scipy_signal.resample(signal_after_vga_echo, num_samples_vis)
+                    else:
+                        signal_after_vga_vis = np.array([])
+                else:
+                    # If delay is beyond signal length, return empty
+                    signal_after_vga_vis = np.array([])
             else:
                 signal_after_vga_vis = signal_after_vga
             

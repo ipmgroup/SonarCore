@@ -1409,19 +1409,16 @@ class MainWindow(QMainWindow):
             
             # If we have current SNR and it's above target, use reduction formula
             if current_snr is not None and current_snr > target_snr * 1.05:  # 5% margin
-                # SNR scales with 10*log10(Tp), so to reduce SNR by X dB, reduce Tp by factor 10^(-X/10)
-                # Formula: Tp_new = Tp_current * 10^((target_snr - SNR_current) / 10)
-                snr_reduction_needed = current_snr - target_snr
-                tp_reduction_factor = 10 ** (-snr_reduction_needed / 10.0)
-                optimal_tp = current_tp * tp_reduction_factor
-                
-                # Check physical constraint: Tp must not exceed 80% of round-trip time at D_target
-                # NOTE: Use D_target, not D_min, for physical constraint in this calculation
-                Tp_max_us = calculator.calculate_optimal_pulse_duration(D_target, T, S, z, min_tp=None)
-                optimal_tp = min(optimal_tp, Tp_max_us)
-                
-                # Ensure minimum 1 µs
-                optimal_tp = max(1.0, optimal_tp)
+                # Use Core method to calculate Tp reduction
+                optimal_tp = calculator.calculate_tp_reduction_for_snr(
+                    current_tp=current_tp,
+                    current_snr_db=current_snr,
+                    target_snr_db=target_snr,
+                    D_target=D_target,
+                    T=T,
+                    S=S,
+                    z=z
+                )
                 
                 calculation_method = "Reduction from current Tp (SNR above target)"
             else:
@@ -2306,11 +2303,20 @@ Success: {'Yes' if output_dto.success else 'No'}
             # Use same time axis as graph 1 (no delay for visualization)
             # Display original signal values (no conversions)
             # All calculations done in Core - use values from OutputDTO
-            if len(t) == len(received_signal) and len(received_signal) > 0:
-                t_ms = t * 1000  # Convert to milliseconds (same as graph 1)
-                # Check for valid data
-                if np.any(np.isfinite(received_signal)) and np.any(np.isfinite(t_ms)):
-                    self.signals_plot_rx.plot(t_ms, received_signal, pen=pg.mkPen('r', width=2))
+            # Note: received_signal may have different length than time_axis due to resampling
+            # Create time axis for received_signal if lengths don't match
+            if len(received_signal) > 0:
+                if len(t) != len(received_signal):
+                    # Create time axis based on signal length and sampling rate
+                    t_received = np.linspace(0, len(received_signal) / fs, len(received_signal))
+                else:
+                    t_received = t
+                
+                if len(t_received) == len(received_signal):
+                    t_ms = t_received * 1000  # Convert to milliseconds
+                    # Check for valid data
+                    if np.any(np.isfinite(received_signal)) and np.any(np.isfinite(t_ms)):
+                        self.signals_plot_rx.plot(t_ms, received_signal, pen=pg.mkPen('r', width=2))
                     
                     # Use attenuation value calculated in Core (from OutputDTO)
                     if output_dto.attenuation_received_db is not None:
@@ -2321,8 +2327,8 @@ Success: {'Yes' if output_dto.success else 'No'}
                             text_item = pg.TextItem(f'Signal attenuated by {abs(attenuation_db):.1f} dB', 
                                                    anchor=(0.5, 1), color='r')
                             # Position at top center of plot
-                            max_time = min(t[-1] * 1000, t[0] * 1000 + 5)
-                            text_x = (t[0] * 1000 + max_time) / 2
+                            max_time = t_received[-1] * 1000  # Full signal duration in milliseconds
+                            text_x = (t_received[0] * 1000 + max_time) / 2
                             y_min, y_max = np.min(received_signal), np.max(received_signal)
                             y_range = y_max - y_min
                             if y_range > 1e-10:
@@ -2332,9 +2338,10 @@ Success: {'Yes' if output_dto.success else 'No'}
                             text_item.setPos(text_x, text_y)
                             self.signals_plot_rx.addItem(text_item)
                     
-                    # Use same X range as graph 1
-                    max_time = min(t[-1] * 1000, t[0] * 1000 + 5)
-                    self.signals_plot_rx.setXRange(t[0] * 1000, max_time)
+                    # Show full signal range (not limited to 5 ms)
+                    # Use actual signal length to determine max time
+                    max_time = t_received[-1] * 1000  # Full signal duration in milliseconds
+                    self.signals_plot_rx.setXRange(t_received[0] * 1000, max_time)
                     # Auto-scale Y axis for this signal
                     y_min, y_max = np.min(received_signal), np.max(received_signal)
                     y_range = y_max - y_min
@@ -2359,9 +2366,19 @@ Success: {'Yes' if output_dto.success else 'No'}
             
             # Plot 4: Signal after LNA
             if signal_after_lna is not None and len(signal_after_lna) > 0:
-                # Use same time axis as graph 1
-                if len(t) == len(signal_after_lna):
-                    t_ms = t * 1000  # Convert to milliseconds
+                # Create time axis for signal_after_lna if lengths don't match
+                # Note: signal_after_lna is resampled to VISUALIZATION_FS in Core
+                # So we need to create time axis that matches the actual signal length
+                if len(t) != len(signal_after_lna):
+                    # Create time axis based on signal length and visualization sampling rate
+                    # Use VISUALIZATION_FS (10 MHz) to match the resampled signal
+                    vis_fs = 10e6  # VISUALIZATION_FS from Core
+                    t_lna = np.linspace(0, len(signal_after_lna) / vis_fs, len(signal_after_lna))
+                else:
+                    t_lna = t
+                
+                if len(t_lna) == len(signal_after_lna):
+                    t_ms = t_lna * 1000  # Convert to milliseconds
                     # Check for valid data
                     if np.any(np.isfinite(signal_after_lna)) and np.any(np.isfinite(t_ms)):
                         self.signals_plot_lna.plot(t_ms, signal_after_lna, pen=pg.mkPen('m', width=2))
@@ -2374,8 +2391,8 @@ Success: {'Yes' if output_dto.success else 'No'}
                             text_item = pg.TextItem(f'Gain {lna_gain:.1f} dB', 
                                                    anchor=(0.5, 1), color='m')
                             # Position at top center of plot
-                            max_time = min(t[-1] * 1000, t[0] * 1000 + 5)
-                            text_x = (t[0] * 1000 + max_time) / 2
+                            max_time = t_lna[-1] * 1000  # Full signal duration in milliseconds
+                            text_x = (t_lna[0] * 1000 + max_time) / 2
                             y_min, y_max = np.min(signal_after_lna), np.max(signal_after_lna)
                             y_range = y_max - y_min
                             if y_range > 1e-10:
@@ -2387,29 +2404,26 @@ Success: {'Yes' if output_dto.success else 'No'}
                         except Exception:
                             pass  # If can't get LNA gain, just skip the label
                         
-                        # Use same X range as graph 1
-                        max_time = min(t[-1] * 1000, t[0] * 1000 + 5)
-                        self.signals_plot_lna.setXRange(t[0] * 1000, max_time)
-                        # Auto-scale Y axis for this signal
-                        y_min, y_max = np.min(signal_after_lna), np.max(signal_after_lna)
-                        y_range = y_max - y_min
-                        if y_range > 1e-10:  # Check for non-zero range
-                            # Add 10% padding
-                            padding = y_range * 0.1
-                            self.signals_plot_lna.setYRange(y_min - padding, y_max + padding)
-                        elif abs(y_max) > 1e-10:  # If signal is non-zero but constant
-                            center = (y_min + y_max) / 2
-                            self.signals_plot_lna.setYRange(center - abs(center) * 0.1, center + abs(center) * 0.1)
-                        else:
-                            # If signal is near zero, set small range
-                            self.signals_plot_lna.setYRange(-0.001, 0.001)
-                        # Force update
-                        self.signals_plot_lna.repaint()
+                    # Show full signal range (not limited to 5 ms)
+                    max_time = t_lna[-1] * 1000  # Full signal duration in milliseconds
+                    self.signals_plot_lna.setXRange(t_lna[0] * 1000, max_time)
+                    # Auto-scale Y axis for this signal
+                    y_min, y_max = np.min(signal_after_lna), np.max(signal_after_lna)
+                    y_range = y_max - y_min
+                    if y_range > 1e-10:  # Check for non-zero range
+                        # Add 10% padding
+                        padding = y_range * 0.1
+                        self.signals_plot_lna.setYRange(y_min - padding, y_max + padding)
+                    elif abs(y_max) > 1e-10:  # If signal is non-zero but constant
+                        center = (y_min + y_max) / 2
+                        self.signals_plot_lna.setYRange(center - abs(center) * 0.1, center + abs(center) * 0.1)
                     else:
-                        self.signals_plot_lna.addItem(pg.TextItem('Invalid signal data\n(non-finite values)', 
-                                                                 anchor=(0.5, 0.5)))
+                        # If signal is near zero, set small range
+                        self.signals_plot_lna.setYRange(-0.001, 0.001)
+                    # Force update
+                    self.signals_plot_lna.repaint()
                 else:
-                    self.signals_plot_lna.addItem(pg.TextItem(f'Invalid signal data\nlen(t)={len(t)}, len(signal)={len(signal_after_lna)}', 
+                    self.signals_plot_lna.addItem(pg.TextItem('Invalid signal data\n(non-finite values)', 
                                                              anchor=(0.5, 0.5)))
             else:
                 self.signals_plot_lna.addItem(pg.TextItem('No LNA signal data available', 
@@ -2417,9 +2431,19 @@ Success: {'Yes' if output_dto.success else 'No'}
             
             # Plot 5: Signal after VGA
             if signal_after_vga is not None and len(signal_after_vga) > 0:
-                # Use same time axis as graph 1
-                if len(t) == len(signal_after_vga):
-                    t_ms = t * 1000  # Convert to milliseconds
+                # Create time axis for signal_after_vga if lengths don't match
+                # Note: signal_after_vga is resampled to VISUALIZATION_FS in Core
+                # So we need to create time axis that matches the actual signal length
+                if len(t) != len(signal_after_vga):
+                    # Create time axis based on signal length and visualization sampling rate
+                    # Use VISUALIZATION_FS (10 MHz) to match the resampled signal
+                    vis_fs = 10e6  # VISUALIZATION_FS from Core
+                    t_vga = np.linspace(0, len(signal_after_vga) / vis_fs, len(signal_after_vga))
+                else:
+                    t_vga = t
+                
+                if len(t_vga) == len(signal_after_vga):
+                    t_ms = t_vga * 1000  # Convert to milliseconds
                     # Check for valid data
                     if np.any(np.isfinite(signal_after_vga)) and np.any(np.isfinite(t_ms)):
                         self.signals_plot_vga.plot(t_ms, signal_after_vga, pen=pg.mkPen('c', width=2))
@@ -2433,8 +2457,8 @@ Success: {'Yes' if output_dto.success else 'No'}
                             text_item = pg.TextItem(f'Gain {vga_gain:.1f} dB', 
                                                    anchor=(0.5, 1), color='c')
                             # Position at top center of plot
-                            max_time = min(t[-1] * 1000, t[0] * 1000 + 5)
-                            text_x = (t[0] * 1000 + max_time) / 2
+                            max_time = t_vga[-1] * 1000  # Full signal duration in milliseconds
+                            text_x = (t_vga[0] * 1000 + max_time) / 2
                             y_min, y_max = np.min(signal_after_vga), np.max(signal_after_vga)
                             y_range = y_max - y_min
                             if y_range > 1e-10:
@@ -2446,29 +2470,27 @@ Success: {'Yes' if output_dto.success else 'No'}
                         except Exception:
                             pass  # If can't get VGA gain, just skip the label
                         
-                        # Use same X range as graph 1
-                        max_time = min(t[-1] * 1000, t[0] * 1000 + 5)
-                        self.signals_plot_vga.setXRange(t[0] * 1000, max_time)
-                        # Auto-scale Y axis for this signal
-                        y_min, y_max = np.min(signal_after_vga), np.max(signal_after_vga)
-                        y_range = y_max - y_min
-                        if y_range > 1e-10:  # Check for non-zero range
-                            # Add 10% padding
-                            padding = y_range * 0.1
-                            self.signals_plot_vga.setYRange(y_min - padding, y_max + padding)
-                        elif abs(y_max) > 1e-10:  # If signal is non-zero but constant
-                            center = (y_min + y_max) / 2
-                            self.signals_plot_vga.setYRange(center - abs(center) * 0.1, center + abs(center) * 0.1)
-                        else:
-                            # If signal is near zero, set small range
-                            self.signals_plot_vga.setYRange(-0.001, 0.001)
-                        # Force update
-                        self.signals_plot_vga.repaint()
+                    # Show full signal range (not limited to 5 ms)
+                    # Use actual signal length to determine max time
+                    max_time = t_vga[-1] * 1000  # Full signal duration in milliseconds
+                    self.signals_plot_vga.setXRange(t_vga[0] * 1000, max_time)
+                    # Auto-scale Y axis for this signal
+                    y_min, y_max = np.min(signal_after_vga), np.max(signal_after_vga)
+                    y_range = y_max - y_min
+                    if y_range > 1e-10:  # Check for non-zero range
+                        # Add 10% padding
+                        padding = y_range * 0.1
+                        self.signals_plot_vga.setYRange(y_min - padding, y_max + padding)
+                    elif abs(y_max) > 1e-10:  # If signal is non-zero but constant
+                        center = (y_min + y_max) / 2
+                        self.signals_plot_vga.setYRange(center - abs(center) * 0.1, center + abs(center) * 0.1)
                     else:
-                        self.signals_plot_vga.addItem(pg.TextItem('Invalid signal data\n(non-finite values)', 
-                                                                 anchor=(0.5, 0.5)))
+                        # If signal is near zero, set small range
+                        self.signals_plot_vga.setYRange(-0.001, 0.001)
+                    # Force update
+                    self.signals_plot_vga.repaint()
                 else:
-                    self.signals_plot_vga.addItem(pg.TextItem(f'Invalid signal data\nlen(t)={len(t)}, len(signal)={len(signal_after_vga)}', 
+                    self.signals_plot_vga.addItem(pg.TextItem('Invalid signal data\n(non-finite values)', 
                                                              anchor=(0.5, 0.5)))
             else:
                 self.signals_plot_vga.addItem(pg.TextItem('No VGA signal data available', 

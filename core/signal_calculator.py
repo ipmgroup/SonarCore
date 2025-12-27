@@ -509,6 +509,41 @@ class SignalCalculator:
             'required_bw_khz': required_bw / 1000.0
         }
     
+    def calculate_tp_reduction_for_snr(self, current_tp: float, current_snr_db: float, 
+                                       target_snr_db: float, D_target: float,
+                                       T: float, S: float, z: float) -> float:
+        """
+        Calculates reduced Tp when current SNR is above target SNR.
+        
+        SNR scales with 10*log10(Tp), so to reduce SNR by X dB, reduce Tp by factor 10^(-X/10).
+        Formula: Tp_new = Tp_current * 10^((target_snr - SNR_current) / 10)
+        
+        Args:
+            current_tp: Current pulse duration, µs
+            current_snr_db: Current SNR, dB
+            target_snr_db: Target SNR, dB
+            D_target: Target distance, m
+            T: Temperature, °C
+            S: Salinity, PSU
+            z: Depth, m
+        
+        Returns:
+            Reduced pulse duration, µs (constrained by physical limits)
+        """
+        # Calculate reduction factor
+        snr_reduction_needed = current_snr_db - target_snr_db
+        tp_reduction_factor = 10 ** (-snr_reduction_needed / 10.0)
+        optimal_tp = current_tp * tp_reduction_factor
+        
+        # Check physical constraint: Tp must not exceed 80% of round-trip time at D_target
+        Tp_max_us = self.calculate_optimal_pulse_duration(D_target, T, S, z, min_tp=None)
+        optimal_tp = min(optimal_tp, Tp_max_us)
+        
+        # Ensure minimum 1 µs
+        optimal_tp = max(1.0, optimal_tp)
+        
+        return optimal_tp
+    
     def calculate_optimal_tp_for_snr(self, D_target: float, target_snr_db: float,
                                      transducer_params: Dict, hardware_params: Dict,
                                      T: float, S: float, z: float,
