@@ -5,6 +5,7 @@ Optimizer - parameter optimization when constraints are violated.
 import numpy as np
 from typing import Dict, List, Optional
 from .dto import InputDTO, OutputDTO, RecommendationsDTO
+from .optimizer_strategy import apply_max_tp_min_vga_strategy, apply_min_tp_for_snr_strategy
 
 
 class Optimizer:
@@ -47,29 +48,10 @@ class Optimizer:
         # Use target_snr from input_dto if available, otherwise use default
         target_snr = input_dto.target_snr if hasattr(input_dto, 'target_snr') and input_dto.target_snr is not None else self.constraints['SNR_min']
         
-        # === OPTIMIZATION STRATEGY ===
-        # Goal: Find VGA Gain for target distance (D_target) with target SNR or better
-        # Constraint: Tp <= 80% of round-trip time (TOF) for D_target
-        # 
-        # Strategy:
-        # 1. Set Tp to maximum allowed (80% TOF for D_target)
-        # 2. Calculate minimum VGA Gain needed to achieve target SNR at this Tp
-        # 3. If VGA Gain exceeds maximum, warn that target SNR may not be achievable
+        # Get optimization strategy
+        optimization_strategy = getattr(input_dto, 'optimization_strategy', 'max_tp_min_vga')
         
         D_target = input_dto.range.D_target if input_dto.range.D_target is not None else (input_dto.range.D_min + input_dto.range.D_max) / 2
-        
-        # Calculate maximum Tp (80% of round-trip time for D_target)
-        try:
-            from .signal_calculator import SignalCalculator
-            calculator = SignalCalculator()
-            Tp_max_for_D_target = calculator.calculate_min_pulse_duration(
-                D_target,  # Use D_target for maximum Tp
-                input_dto.environment.T,
-                input_dto.environment.S,
-                input_dto.environment.z
-            )
-        except Exception:
-            Tp_max_for_D_target = None
         
         # Get transducer parameters for TX and RX signal level information
         tx_info_text = ""
@@ -242,82 +224,40 @@ When constraints are violated, the optimizer suggests parameter changes:
         
         # Check SNR (warning, not error - target not met but simulation succeeded)
         # Case 1: SNR is below target
-        # Optimization strategy: Set Tp to maximum (80% TOF for D_target), then find minimum VGA Gain
         if output_dto.SNR_ADC < target_snr:
             warnings.append(f"SNR ({output_dto.SNR_ADC:.2f} dB) is below target ({target_snr:.2f} dB)")
             
-            # Optimization strategy: Use maximum Tp (80% TOF for D_target)
-            # Then find minimum VGA Gain for target SNR at this Tp
-            D_target = input_dto.range.D_target if input_dto.range.D_target is not None else (input_dto.range.D_min + input_dto.range.D_max) / 2
-            
-            # Calculate maximum Tp (80% of round-trip time for D_target)
             try:
                 from .signal_calculator import SignalCalculator
                 calculator = SignalCalculator()
-                Tp_max_for_D_target = calculator.calculate_min_pulse_duration(
-                    D_target,
-                    input_dto.environment.T,
-                    input_dto.environment.S,
-                    input_dto.environment.z
-                )
-                optimal_tp = Tp_max_for_D_target
                 
-                # Check if current Tp is less than maximum
-                if input_dto.signal.Tp < optimal_tp:
-                    # Recommend increasing Tp to maximum
-                    recommendations.increase_Tp = True
-                    recommendations._optimal_tp_for_snr = optimal_tp
-                    recommendations_text += f"Optimization strategy: Set Tp to maximum (80% TOF for D_target = {optimal_tp:.1f} µs) to maximize signal energy. "
-                    recommendations_text += f"Current Tp ({input_dto.signal.Tp:.1f} µs) < maximum ({optimal_tp:.1f} µs). "
-                else:
-                    # Tp is already at or above maximum - use current Tp
-                    optimal_tp = input_dto.signal.Tp
+                if optimization_strategy == "max_tp_min_vga":
+                    # Strategy 1: Use maximum Tp (80% TOF for D_target), then find minimum VGA Gain
+                    optimal_tp, recommendations_text = apply_max_tp_min_vga_strategy(
+                        input_dto, output_dto, target_snr, recommendations, recommendations_text,
+                        self.data_provider, calculator
+                    )
+                    
+                    # Calculate minimum VGA Gain needed for target SNR at optimal Tp
+                    recommendations_text = self._calculate_min_vga_for_snr(
+                        input_dto, output_dto, target_snr, optimal_tp,
+                        recommendations, recommendations_text
+                    )
                 
-                # Calculate minimum VGA Gain needed for target SNR at optimal Tp (maximum for D_target)
-                try:
-                    if self.data_provider:
-                        transducer_params = self.data_provider.get_transducer(input_dto.hardware.transducer_id)
-                        lna_params = self.data_provider.get_lna(input_dto.hardware.lna_id)
-                        vga_params = self.data_provider.get_vga(input_dto.hardware.vga_id)
-                        
-                        # Get current VGA Gain
-                        current_vga_gain = output_dto.vga_gain if output_dto.vga_gain is not None else vga_params.get('G', 30)
-                        vga_gain_min = vga_params.get('G_min', 0)
-                        vga_gain_max = output_dto.vga_gain_max if output_dto.vga_gain_max is not None else vga_params.get('G_max', 60)
-                        
-                        # Estimate SNR at optimal Tp using current parameters
-                        # SNR scales with 10*log10(Tp), so:
-                        # SNR_at_optimal_tp = SNR_current + 10*log10(optimal_tp / current_tp)
-                        if input_dto.signal.Tp > 0:
-                            snr_at_optimal_tp = output_dto.SNR_ADC + 10 * np.log10(optimal_tp / input_dto.signal.Tp)
-                        else:
-                            snr_at_optimal_tp = output_dto.SNR_ADC
-                        
-                        # Calculate required VGA Gain change to achieve target SNR
-                        # VGA Gain directly affects SNR (approximately 1:1 ratio)
-                        snr_deficit_at_optimal_tp = target_snr - snr_at_optimal_tp
-                        
-                        if snr_deficit_at_optimal_tp > 0:
-                            # Need to increase VGA Gain
-                            required_vga_gain = current_vga_gain + snr_deficit_at_optimal_tp
-                            # Limit to maximum
-                            required_vga_gain = min(required_vga_gain, vga_gain_max)
-                            recommendations.increase_G_VGA = True
-                            recommendations.suggested_vga_gain = required_vga_gain
-                            recommendations_text += f"At Tp={optimal_tp:.1f} µs, estimated SNR={snr_at_optimal_tp:.2f} dB. "
-                            recommendations_text += f"Minimum VGA Gain for target SNR ({target_snr:.2f} dB): {required_vga_gain:.1f} dB (current: {current_vga_gain:.1f} dB). "
-                            if required_vga_gain >= vga_gain_max:
-                                recommendations_text += f"WARNING: Required VGA Gain ({required_vga_gain:.1f} dB) is at maximum ({vga_gain_max:.1f} dB). Target SNR may not be achievable. "
-                                recommendations.warn_unachievable_snr = True
-                        else:
-                            # SNR at optimal Tp is already at or above target - current VGA Gain is sufficient
-                            recommendations_text += f"At Tp={optimal_tp:.1f} µs, estimated SNR={snr_at_optimal_tp:.2f} dB. "
-                            recommendations_text += f"Current VGA Gain ({current_vga_gain:.1f} dB) is sufficient for target SNR ({target_snr:.2f} dB). "
-                except Exception as e:
-                    # If calculation fails, use fallback logic
-                    recommendations.increase_Tp = True
-                    recommendations.increase_G_VGA = True
-                    recommendations_text += f"Increase Tp and VGA gain to improve SNR (target: {target_snr:.2f} dB). "
+                elif optimization_strategy == "min_tp_for_snr":
+                    # Strategy 2: Find minimum Tp needed to achieve target SNR at D_target
+                    optimal_tp, recommendations_text = apply_min_tp_for_snr_strategy(
+                        input_dto, output_dto, target_snr, recommendations, recommendations_text,
+                        self.data_provider, calculator
+                    )
+                    
+                    if input_dto.signal.Tp < optimal_tp:
+                        recommendations.increase_Tp = True
+                        recommendations._optimal_tp_for_snr = optimal_tp
+                        recommendations_text += f"Strategy 2 (Min Tp for SNR): Minimum Tp for target SNR ({target_snr:.2f} dB) at D_target: {optimal_tp:.1f} µs. "
+                        recommendations_text += f"Current Tp ({input_dto.signal.Tp:.1f} µs) < minimum ({optimal_tp:.1f} µs). "
+                    else:
+                        recommendations_text += f"Strategy 2 (Min Tp for SNR): Current Tp ({input_dto.signal.Tp:.1f} µs) is sufficient for target SNR. "
             except Exception:
                 # If calculation fails, use fallback logic
                 recommendations.increase_Tp = True
@@ -325,94 +265,45 @@ When constraints are violated, the optimizer suggests parameter changes:
                 recommendations_text += f"Increase Tp and VGA gain to improve SNR (target: {target_snr:.2f} dB). "
         
         # Case 2: SNR is above target
-        # According to optimization strategy: Set Tp to maximum (80% TOF for D_target), then find minimum VGA Gain
-        # Even if SNR is above target, we should still optimize: use maximum Tp and find minimum VGA Gain
         elif output_dto.SNR_ADC > target_snr:
-            # Optimization strategy: Use maximum Tp (80% TOF for D_target)
-            # Then find minimum VGA Gain for target SNR at this Tp
-            D_target = input_dto.range.D_target if input_dto.range.D_target is not None else (input_dto.range.D_min + input_dto.range.D_max) / 2
-            
-            # Calculate maximum Tp (80% of round-trip time for D_target)
             try:
                 from .signal_calculator import SignalCalculator
                 calculator = SignalCalculator()
-                Tp_max_for_D_target = calculator.calculate_min_pulse_duration(
-                    D_target,
-                    input_dto.environment.T,
-                    input_dto.environment.S,
-                    input_dto.environment.z
-                )
-                optimal_tp = Tp_max_for_D_target
                 
-                # Check if current Tp is less than maximum
-                if input_dto.signal.Tp < optimal_tp:
-                    # Recommend increasing Tp to maximum
-                    recommendations.increase_Tp = True
-                    recommendations._optimal_tp_for_snr = optimal_tp
-                    recommendations_text += f"Optimization strategy: Set Tp to maximum (80% TOF for D_target = {optimal_tp:.1f} µs) to maximize signal energy. "
-                    recommendations_text += f"Current Tp ({input_dto.signal.Tp:.1f} µs) < maximum ({optimal_tp:.1f} µs). "
-                else:
-                    # Tp is already at or above maximum - use current Tp
-                    optimal_tp = input_dto.signal.Tp
+                if optimization_strategy == "max_tp_min_vga":
+                    # Strategy 1: Use maximum Tp (80% TOF for D_target), then find minimum VGA Gain
+                    optimal_tp, recommendations_text = apply_max_tp_min_vga_strategy(
+                        input_dto, output_dto, target_snr, recommendations, recommendations_text,
+                        self.data_provider, calculator
+                    )
+                    
+                    # Calculate minimum VGA Gain needed for target SNR at optimal Tp
+                    recommendations_text = self._calculate_min_vga_for_snr(
+                        input_dto, output_dto, target_snr, optimal_tp,
+                        recommendations, recommendations_text
+                    )
                 
-                # Calculate minimum VGA Gain needed for target SNR at optimal Tp (maximum for D_target)
-                # Use sonar equation to estimate SNR at optimal Tp, then calculate required VGA Gain
-                try:
-                    if self.data_provider:
-                        transducer_params = self.data_provider.get_transducer(input_dto.hardware.transducer_id)
-                        lna_params = self.data_provider.get_lna(input_dto.hardware.lna_id)
-                        vga_params = self.data_provider.get_vga(input_dto.hardware.vga_id)
+                elif optimization_strategy == "min_tp_for_snr":
+                    # Strategy 2: Reduce Tp to minimum needed for target SNR
+                    snr_excess = output_dto.SNR_ADC - target_snr
+                    if snr_excess > 1.0:  # Only suggest if significantly above (1 dB margin)
+                        optimal_tp, recommendations_text = apply_min_tp_for_snr_strategy(
+                            input_dto, output_dto, target_snr, recommendations, recommendations_text,
+                            self.data_provider, calculator
+                        )
                         
-                        # Get current VGA Gain
-                        current_vga_gain = output_dto.vga_gain if output_dto.vga_gain is not None else vga_params.get('G', 30)
-                        vga_gain_min = vga_params.get('G_min', 0)
-                        vga_gain_max = output_dto.vga_gain_max if output_dto.vga_gain_max is not None else vga_params.get('G_max', 60)
-                        
-                        # Estimate SNR at optimal Tp using current parameters
-                        # SNR scales with 10*log10(Tp), so:
-                        # SNR_at_optimal_tp = SNR_current + 10*log10(optimal_tp / current_tp)
-                        if input_dto.signal.Tp > 0:
-                            snr_at_optimal_tp = output_dto.SNR_ADC + 10 * np.log10(optimal_tp / input_dto.signal.Tp)
+                        # Check if we can reduce Tp
+                        if optimal_tp < input_dto.signal.Tp:
+                            recommendations.decrease_Tp = True
+                            recommendations._optimal_tp_for_snr = optimal_tp
+                            recommendations_text += f"Strategy 2 (Min Tp for SNR): SNR ({output_dto.SNR_ADC:.2f} dB) is above target ({target_snr:.2f} dB). "
+                            recommendations_text += f"Minimum Tp for target SNR at D_target: {optimal_tp:.1f} µs. "
+                            recommendations_text += f"Current Tp ({input_dto.signal.Tp:.1f} µs) can be reduced to {optimal_tp:.1f} µs. "
                         else:
-                            snr_at_optimal_tp = output_dto.SNR_ADC
-                        
-                        # Calculate required VGA Gain change to achieve target SNR
-                        # VGA Gain directly affects SNR (approximately 1:1 ratio)
-                        snr_deficit_at_optimal_tp = target_snr - snr_at_optimal_tp
-                        
-                        if snr_deficit_at_optimal_tp > 0:
-                            # Need to increase VGA Gain
-                            required_vga_gain = current_vga_gain + snr_deficit_at_optimal_tp
-                            # Limit to maximum
-                            required_vga_gain = min(required_vga_gain, vga_gain_max)
-                            recommendations.increase_G_VGA = True
-                            recommendations.suggested_vga_gain = required_vga_gain
-                            recommendations_text += f"At Tp={optimal_tp:.1f} µs, estimated SNR={snr_at_optimal_tp:.2f} dB. "
-                            recommendations_text += f"Minimum VGA Gain for target SNR ({target_snr:.2f} dB): {required_vga_gain:.1f} dB (current: {current_vga_gain:.1f} dB). "
-                            if required_vga_gain >= vga_gain_max:
-                                recommendations_text += f"WARNING: Required VGA Gain ({required_vga_gain:.1f} dB) is at maximum ({vga_gain_max:.1f} dB). Target SNR may not be achievable. "
-                        elif snr_deficit_at_optimal_tp < -1.0:  # SNR is significantly above target (1 dB margin)
-                            # Can reduce VGA Gain while maintaining target SNR
-                            # Reduce VGA Gain by the excess SNR
-                            excess_snr = -snr_deficit_at_optimal_tp
-                            required_vga_gain = current_vga_gain - excess_snr
-                            # Limit to minimum
-                            required_vga_gain = max(required_vga_gain, vga_gain_min)
-                            if required_vga_gain < current_vga_gain:
-                                recommendations.decrease_G_VGA = True
-                                recommendations.suggested_vga_gain = required_vga_gain
-                                recommendations_text += f"At Tp={optimal_tp:.1f} µs, estimated SNR={snr_at_optimal_tp:.2f} dB. "
-                                recommendations_text += f"Can reduce VGA Gain to {required_vga_gain:.1f} dB (current: {current_vga_gain:.1f} dB) while maintaining target SNR ({target_snr:.2f} dB). "
-                        else:
-                            # SNR is close to target - current VGA Gain is optimal
-                            recommendations_text += f"At Tp={optimal_tp:.1f} µs, estimated SNR={snr_at_optimal_tp:.2f} dB. "
-                            recommendations_text += f"Current VGA Gain ({current_vga_gain:.1f} dB) is optimal for target SNR ({target_snr:.2f} dB). "
-                except Exception as e:
-                    # If calculation fails, skip VGA optimization
-                    pass
+                            recommendations_text += f"Strategy 2 (Min Tp for SNR): Current Tp ({input_dto.signal.Tp:.1f} µs) is already at minimum for target SNR. "
             except Exception:
-                # If calculation fails, keep current Tp
-                optimal_tp = input_dto.signal.Tp
+                # If calculation fails, skip optimization
+                pass
             
         
         # Check clipping (error - critical problem)
@@ -561,6 +452,77 @@ When constraints are violated, the optimizer suggests parameter changes:
             output_dto.warnings.extend(warnings)
         
         return recommendations
+    
+    def _calculate_min_vga_for_snr(self, input_dto: InputDTO, output_dto: OutputDTO,
+                                    target_snr: float, optimal_tp: float,
+                                    recommendations: RecommendationsDTO, recommendations_text: str) -> str:
+        """
+        Calculate minimum VGA Gain needed for target SNR at given Tp.
+        
+        Args:
+            input_dto: Input DTO
+            output_dto: Output DTO
+            target_snr: Target SNR in dB
+            optimal_tp: Optimal Tp in microseconds
+            recommendations: Recommendations DTO to update
+            recommendations_text: Text to append recommendations to
+        
+        Returns:
+            Updated recommendations_text
+        """
+        try:
+            if self.data_provider:
+                transducer_params = self.data_provider.get_transducer(input_dto.hardware.transducer_id)
+                lna_params = self.data_provider.get_lna(input_dto.hardware.lna_id)
+                vga_params = self.data_provider.get_vga(input_dto.hardware.vga_id)
+                
+                # Get current VGA Gain
+                current_vga_gain = output_dto.vga_gain if output_dto.vga_gain is not None else vga_params.get('G', 30)
+                vga_gain_min = vga_params.get('G_min', 0)
+                vga_gain_max = output_dto.vga_gain_max if output_dto.vga_gain_max is not None else vga_params.get('G_max', 60)
+                
+                # Estimate SNR at optimal Tp using current parameters
+                # SNR scales with 10*log10(Tp), so:
+                # SNR_at_optimal_tp = SNR_current + 10*log10(optimal_tp / current_tp)
+                if input_dto.signal.Tp > 0:
+                    snr_at_optimal_tp = output_dto.SNR_ADC + 10 * np.log10(optimal_tp / input_dto.signal.Tp)
+                else:
+                    snr_at_optimal_tp = output_dto.SNR_ADC
+                
+                # Calculate required VGA Gain change to achieve target SNR
+                # VGA Gain directly affects SNR (approximately 1:1 ratio)
+                snr_deficit_at_optimal_tp = target_snr - snr_at_optimal_tp
+                
+                if snr_deficit_at_optimal_tp > 0:
+                    # Need to increase VGA Gain
+                    required_vga_gain = current_vga_gain + snr_deficit_at_optimal_tp
+                    # Limit to maximum
+                    required_vga_gain = min(required_vga_gain, vga_gain_max)
+                    recommendations.increase_G_VGA = True
+                    recommendations.suggested_vga_gain = required_vga_gain
+                    recommendations_text += f"At Tp={optimal_tp:.1f} µs, estimated SNR={snr_at_optimal_tp:.2f} dB. "
+                    recommendations_text += f"Minimum VGA Gain for target SNR ({target_snr:.2f} dB): {required_vga_gain:.1f} dB (current: {current_vga_gain:.1f} dB). "
+                    if required_vga_gain >= vga_gain_max:
+                        recommendations_text += f"WARNING: Required VGA Gain ({required_vga_gain:.1f} dB) is at maximum ({vga_gain_max:.1f} dB). Target SNR may not be achievable. "
+                        recommendations.warn_unachievable_snr = True
+                else:
+                    # SNR at optimal Tp is already at or above target - can reduce VGA Gain
+                    required_vga_gain = current_vga_gain + snr_deficit_at_optimal_tp  # This will be negative
+                    # Limit to minimum
+                    required_vga_gain = max(required_vga_gain, vga_gain_min)
+                    if required_vga_gain < current_vga_gain:
+                        recommendations.decrease_G_VGA = True
+                        recommendations.suggested_vga_gain = required_vga_gain
+                        recommendations_text += f"At Tp={optimal_tp:.1f} µs, estimated SNR={snr_at_optimal_tp:.2f} dB. "
+                        recommendations_text += f"SNR is above target. Can reduce VGA Gain to {required_vga_gain:.1f} dB (current: {current_vga_gain:.1f} dB) while maintaining target SNR. "
+                    else:
+                        recommendations_text += f"At Tp={optimal_tp:.1f} µs, estimated SNR={snr_at_optimal_tp:.2f} dB. "
+                        recommendations_text += f"Current VGA Gain ({current_vga_gain:.1f} dB) is optimal for target SNR ({target_snr:.2f} dB). "
+        except Exception as e:
+            # If calculation fails, skip VGA optimization
+            pass
+        
+        return recommendations_text
     
     def suggest_parameter_changes(self, input_dto: InputDTO, 
                                   recommendations: RecommendationsDTO) -> Dict:

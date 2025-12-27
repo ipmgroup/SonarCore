@@ -120,7 +120,7 @@ class MainWindow(QMainWindow):
         right_panel = self._create_results_panel()
         top_layout.addWidget(right_panel, 1)
         
-        # Right panel - signal path
+        # Right panel - signal path and optimization strategy
         from gui.signal_path_widget import SignalPathWidget
         self.signal_path_widget = SignalPathWidget()
         self.signal_path_widget.lna_gain_changed.connect(self._on_signal_path_param_changed)
@@ -128,13 +128,47 @@ class MainWindow(QMainWindow):
         self.signal_path_widget.vga_gain_changed.connect(self._on_signal_path_param_changed)
         # Bottom reflection is now in environment parameters, not in signal_path_widget
         
+        # Create vertical container for Signal Path and Optimization Strategy
+        right_panel_container = QWidget()
+        right_panel_layout = QVBoxLayout(right_panel_container)
+        right_panel_layout.setContentsMargins(0, 0, 0, 0)
+        
         signal_path_group = QGroupBox("Signal Path")
         signal_path_layout = QVBoxLayout()
         signal_path_layout.addWidget(self.signal_path_widget)
         signal_path_group.setLayout(signal_path_layout)
         # Set maximum width to limit Signal Path width
         signal_path_group.setMaximumWidth(680)
-        top_layout.addWidget(signal_path_group, 0)  # Changed stretch factor from 1 to 0
+        right_panel_layout.addWidget(signal_path_group, 1)  # Allow Signal Path to expand
+        
+        # Optimization strategy selection (under Signal Path)
+        strategy_group = QGroupBox("Optimization Strategy")
+        strategy_layout = QVBoxLayout()
+        strategy_layout.setContentsMargins(5, 5, 5, 5)
+        strategy_layout.setSpacing(5)
+        
+        self.optimization_strategy_combo = QComboBox()
+        self.optimization_strategy_combo.addItem("Maximum Tp + Minimum VGA Gain", "max_tp_min_vga")
+        self.optimization_strategy_combo.addItem("Minimum Tp for Target SNR", "min_tp_for_snr")
+        self.optimization_strategy_combo.setToolTip(
+            "Strategy 1 (Max Tp + Min VGA): Set Tp to maximum (80% TOF for D_target), then find minimum VGA Gain for target SNR.\n"
+            "Strategy 2 (Min Tp for SNR): Find minimum Tp needed to achieve target SNR at D_target."
+        )
+        strategy_layout.addWidget(QLabel("Strategy:"))
+        strategy_layout.addWidget(self.optimization_strategy_combo)
+        strategy_group.setLayout(strategy_layout)
+        strategy_group.setMaximumWidth(680)
+        # Set size policy to prevent vertical expansion
+        from PyQt5.QtWidgets import QSizePolicy
+        size_policy = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        strategy_group.setSizePolicy(size_policy)
+        right_panel_layout.addWidget(strategy_group, 0)  # Set stretch factor to 0 - no expansion
+        
+        # Add stretch at the end to push everything up
+        right_panel_layout.addStretch()
+        
+        # Add the container to top layout
+        top_layout.addWidget(right_panel_container, 0)
         
         main_layout.addLayout(top_layout, 1)
     
@@ -1778,12 +1812,16 @@ class MainWindow(QMainWindow):
                 target_snr = 40.0
                 self.logger.warning(f"Target SNR ({self.target_snr_spin.value() if hasattr(self, 'target_snr_spin') else 20.0}) > 40. Using 40.0")
             
+            # Get optimization strategy
+            optimization_strategy = self.optimization_strategy_combo.currentData() if hasattr(self, 'optimization_strategy_combo') else "max_tp_min_vga"
+            
             return InputDTO(
                 hardware=hardware,
                 signal=signal,
                 environment=environment,
                 range=range_dto,
-                target_snr=target_snr
+                target_snr=target_snr,
+                optimization_strategy=optimization_strategy
             )
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error creating input data: {e}")

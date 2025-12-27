@@ -84,6 +84,7 @@ class InputDTO(BaseModel):
     environment: EnvironmentDTO
     range: RangeDTO
     target_snr: Optional[float] = Field(default=20.0, ge=10, le=40, description="Target SNR at ADC output, dB (range: 10-40)")
+    optimization_strategy: Optional[str] = Field(default="max_tp_min_vga", description="Optimization strategy: 'max_tp_min_vga' (use maximum Tp and find minimum VGA Gain) or 'min_tp_for_snr' (find minimum Tp for target SNR)")
 
 
 class RecommendationsDTO(BaseModel):
