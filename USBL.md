@@ -237,6 +237,16 @@ $$\varphi = \arcsin(s_z) \quad \text{(угол места)}$$
 
 где $\mathbf{s} = (s_x, s_y, s_z)$.
 
+Единичный вектор $\mathbf{s} = (s_x, s_y, s_z)$ можно записать через углы:
+
+$$\begin{cases}
+s_x = \cos \varphi \cdot \cos \theta \\
+s_y = \cos \varphi \cdot \sin \theta \\
+s_z = \sin \varphi
+\end{cases}$$
+
+где $\theta$ — азимут, $\varphi$ — угол места.
+
 **Оценка угловых ошибок:**
 
 $$\sigma_\theta = \frac{c}{2\pi f_0 \|\mathbf{r}_i - \mathbf{r}_j\| \cos(\varphi)} \cdot \sigma_{\Delta\phi}$$
