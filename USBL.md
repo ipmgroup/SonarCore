@@ -223,9 +223,9 @@ $$\Delta\phi_{ij} = \frac{2\pi f_0}{c} \mathbf{s} \cdot (\mathbf{r}_i - \mathbf{
 
 $$e_{ij} = \Delta\phi_{ij} - \frac{2\pi f_0}{c} \mathbf{s} \cdot (\mathbf{r}_i - \mathbf{r}_j)$$
 
-Оценка единичного вектора:
+Оценка единичного вектора (минимизация суммы квадратов ошибок по всем парам приемников):
 
-$$\hat{\mathbf{s}} = \text{argmin} \sum_{i<j} e_{ij}^2$$
+$$\hat{\mathbf{s}} = \text{argmin} \sum_{i,j} e_{ij}^2$$
 
 где $\Vert\mathbf{s}\Vert = 1$ означает, что вектор $\mathbf{s}$ является единичным.
 
