@@ -31,3 +31,6 @@ logs/
 
 # GUI settings - user-specific configuration file
 gui.json
+
+# Promotional files
+linkedin_promo.txt
