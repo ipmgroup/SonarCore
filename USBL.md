@@ -219,7 +219,7 @@ $$\Delta\phi_{ij} = \frac{2\pi f_0}{c} \mathbf{s} \cdot (\mathbf{r}_i - \mathbf{
 
 Единичный вектор направления находится как решение задачи оптимизации при условии $\|\mathbf{s}\| = 1$:
 
-$$\hat{\mathbf{s}} = \arg\min \sum_{i<j} \left(\Delta\phi_{ij} - \frac{2\pi f_0}{c} \mathbf{s} \cdot (\mathbf{r}_i - \mathbf{r}_j)\right)^2$$
+$$\hat{\mathbf{s}} = \arg\min \sum_{i<j} \left( \Delta\phi_{ij} - \frac{2\pi f_0}{c} \mathbf{s} \cdot (\mathbf{r}_i - \mathbf{r}_j) \right)^2$$
 
 где $\|\mathbf{s}\| = 1$ означает, что вектор $\mathbf{s}$ является единичным.
 
