@@ -219,7 +219,13 @@ $$\Delta\phi_{ij} = \frac{2\pi f_0}{c} \mathbf{s} \cdot (\mathbf{r}_i - \mathbf{
 
 Единичный вектор направления находится как решение задачи оптимизации при условии $\Vert\mathbf{s}\Vert = 1$:
 
-$$\hat{\mathbf{s}} = \text{argmin} \sum_{i<j} ( \Delta\phi_{ij} - \frac{2\pi f_0}{c} \mathbf{s} \cdot (\mathbf{r}_i - \mathbf{r}_j) )^2$$
+Ошибка измерения фазы для пары приемников $i$ и $j$:
+
+$$e_{ij} = \Delta\phi_{ij} - \frac{2\pi f_0}{c} \mathbf{s} \cdot (\mathbf{r}_i - \mathbf{r}_j)$$
+
+Оценка единичного вектора:
+
+$$\hat{\mathbf{s}} = \text{argmin} \sum_{i<j} e_{ij}^2$$
 
 где $\Vert\mathbf{s}\Vert = 1$ означает, что вектор $\mathbf{s}$ является единичным.
 
