@@ -217,7 +217,7 @@ $$\Delta\phi_{ij} = \frac{2\pi f_0}{c} \mathbf{s} \cdot (\mathbf{r}_i - \mathbf{
 
 **Оценка единичного вектора направления:**
 
-$$\hat{\mathbf{s}} = \arg\min_{\|\mathbf{s}\|=1} \sum_{i<j} \left(\Delta\phi_{ij} - \frac{2\pi f_0}{c} \mathbf{s} \cdot (\mathbf{r}_i - \mathbf{r}_j)\right)^2$$
+$$\hat{\mathbf{s}} = \underset{\|\mathbf{s}\| = 1}{\operatorname{argmin}} \sum_{i<j} \left(\Delta\phi_{ij} - \frac{2\pi f_0}{c} \mathbf{s} \cdot (\mathbf{r}_i - \mathbf{r}_j)\right)^2$$
 
 **Преобразование в азимут и угол места:**
 
