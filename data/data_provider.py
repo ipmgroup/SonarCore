@@ -156,7 +156,10 @@ class DataProvider:
         if not transducers_dir.exists():
             return []
         
-        return [f.stem for f in transducers_dir.glob('*.json')]
+        # Exclude service files
+        excluded_files = {'index', 'example_transducer'}
+        return [f.stem for f in transducers_dir.glob('*.json') 
+                if f.stem not in excluded_files]
     
     def list_lna(self) -> List[str]:
         """Returns list of available LNA."""
