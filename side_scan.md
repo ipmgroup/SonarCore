@@ -87,20 +87,16 @@ $$
 
 3. **Tukey:**
 
-   Для $0 \leq t < \frac{\alpha T}{2}$:
-   $$
-   w(t) = \frac{1}{2}\left[1 + \cos\left(\frac{\pi}{\alpha T/2}\left(t - \frac{\alpha T}{2}\right)\right)\right]
-   $$
-
-   Для $\frac{\alpha T}{2} \leq t \leq T - \frac{\alpha T}{2}$:
-   $$
-   w(t) = 1
-   $$
-
-   Для $T - \frac{\alpha T}{2} < t \leq T$:
-   $$
-   w(t) = \frac{1}{2}\left[1 + \cos\left(\frac{\pi}{\alpha T/2}\left(t - T + \frac{\alpha T}{2}\right)\right)\right]
-   $$
+   Кусочно-определённая функция:
+   
+   - При $0 \leq t < \frac{\alpha T}{2}$:
+     $$w(t) = \frac{1}{2}\left[1 + \cos\left(\frac{\pi}{\alpha T/2}\left(t - \frac{\alpha T}{2}\right)\right)\right]$$
+   
+   - При $\frac{\alpha T}{2} \leq t \leq T - \frac{\alpha T}{2}$:
+     $$w(t) = 1$$
+   
+   - При $T - \frac{\alpha T}{2} < t \leq T$:
+     $$w(t) = \frac{1}{2}\left[1 + \cos\left(\frac{\pi}{\alpha T/2}\left(t - T + \frac{\alpha T}{2}\right)\right)\right]$$
 
 4. **RaisedCosine:**
    $$
