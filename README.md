@@ -41,10 +41,13 @@ SonarCore consists of three main modules:
 
 ## 📚 Documentation
 
-- [Sonar.md](Sonar.md) - Complete technical documentation (in Russian)
-- [SBP.md](SBP.md) - Sub-Bottom Profiler technical specification
-- [side_scan.md](side_scan.md) - Side-Scan Sonar technical specification
-- [INSTALL.md](INSTALL.md) - Installation and setup guide
+Complete technical specifications and documentation:
+
+- **[Sonar.md](Sonar.md)** - Complete technical documentation for the SonarCore platform (in Russian)
+- **[SBP.md](SBP.md)** - Sub-Bottom Profiler (SBP) technical specification with ground profile and penetration depth modeling
+- **[side_scan.md](side_scan.md)** - Side-Scan Sonar technical specification (300-900 kHz) with digital IQ processing
+- **[USBL.md](USBL.md)** - Ultra-Short Baseline positioning system technical specification
+- **[INSTALL.md](INSTALL.md)** - Installation and setup guide
 
 ## 🔬 Scientific Models
 
