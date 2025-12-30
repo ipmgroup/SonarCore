@@ -27,6 +27,8 @@ For detailed installation instructions, see [INSTALL.md](INSTALL.md).
 
 ## 📋 Supported Systems
 
+**Note:** These simulators are currently under active development.
+
 - **Sub-Bottom Profiler (SBP)**: Ground profile and penetration depth analysis
 - **Side-Scan Sonar**: Seafloor imaging and backscattering analysis
 - **USBL**: Underwater positioning systems
