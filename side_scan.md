@@ -1045,35 +1045,41 @@ $$
   - $\beta \approx 8.6$ → окно, близкое к Blackman
   - Типичные значения: $\beta = 5$–$10$
 
-**Математическое описание окон:**
+**Математическое описание окон для matched filter:**
 
 Для опорного сигнала длиной $N$ отсчётов:
 
 1. **None (Rectangular):**
-   $$
-   w[n] = 1, \quad 0 \leq n < N
-   $$
+
+$$
+w[n] = 1, \quad 0 \leq n < N
+$$
 
 2. **Hann:**
-   $$
-   w[n] = 0.5 \left(1 - \cos\left(\frac{2\pi n}{N-1}\right)\right), \quad 0 \leq n < N
-   $$
+
+$$
+w[n] = 0.5 \left(1 - \cos\left(\frac{2\pi n}{N-1}\right)\right), \quad 0 \leq n < N
+$$
 
 3. **Hamming:**
-   $$
-   w[n] = 0.54 - 0.46 \cos\left(\frac{2\pi n}{N-1}\right), \quad 0 \leq n < N
-   $$
+
+$$
+w[n] = 0.54 - 0.46 \cos\left(\frac{2\pi n}{N-1}\right), \quad 0 \leq n < N
+$$
 
 4. **Blackman:**
-   $$
-   w[n] = 0.42 - 0.5 \cos\left(\frac{2\pi n}{N-1}\right) + 0.08 \cos\left(\frac{4\pi n}{N-1}\right), \quad 0 \leq n < N
-   $$
+
+$$
+w[n] = 0.42 - 0.5 \cos\left(\frac{2\pi n}{N-1}\right) + 0.08 \cos\left(\frac{4\pi n}{N-1}\right), \quad 0 \leq n < N
+$$
 
 5. **Kaiser:**
-   $$
-   w[n] = \frac{I_0\left(\beta \sqrt{1 - \left(\frac{2n}{N-1} - 1\right)^2}\right)}{I_0(\beta)}, \quad 0 \leq n < N
-   $$
-   где $I_0$ — модифицированная функция Бесселя нулевого порядка.
+
+$$
+w[n] = \frac{I_0\left(\beta \sqrt{1 - \left(\frac{2n}{N-1} - 1\right)^2}\right)}{I_0(\beta)}, \quad 0 \leq n < N
+$$
+
+где $I_0$ — модифицированная функция Бесселя нулевого порядка.
 
 **Визуальное сравнение:**
 
