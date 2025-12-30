@@ -86,12 +86,20 @@ $$
    $$
 
 3. **Tukey:**
+
+   Для $0 \leq t < \frac{\alpha T}{2}$:
    $$
-   w(t) = \begin{cases}
-   \frac{1}{2}\left[1 + \cos\left(\frac{\pi}{\alpha T/2}\left(t - \frac{\alpha T}{2}\right)\right)\right], & 0 \leq t < \frac{\alpha T}{2} \\
-   1, & \frac{\alpha T}{2} \leq t \leq T - \frac{\alpha T}{2} \\
-   \frac{1}{2}\left[1 + \cos\left(\frac{\pi}{\alpha T/2}\left(t - T + \frac{\alpha T}{2}\right)\right)\right], & T - \frac{\alpha T}{2} < t \leq T
-   \end{cases}
+   w(t) = \frac{1}{2}\left[1 + \cos\left(\frac{\pi}{\alpha T/2}\left(t - \frac{\alpha T}{2}\right)\right)\right]
+   $$
+
+   Для $\frac{\alpha T}{2} \leq t \leq T - \frac{\alpha T}{2}$:
+   $$
+   w(t) = 1
+   $$
+
+   Для $T - \frac{\alpha T}{2} < t \leq T$:
+   $$
+   w(t) = \frac{1}{2}\left[1 + \cos\left(\frac{\pi}{\alpha T/2}\left(t - T + \frac{\alpha T}{2}\right)\right)\right]
    $$
 
 4. **RaisedCosine:**
@@ -848,10 +856,7 @@ $$
 **Передаточная функция (идеальный фильтр):**
 
 $$
-H_{BPF}(f) = \begin{cases}
-1, & f_{min} \leq f \leq f_{max} \\
-0, & \text{иначе}
-\end{cases}
+H_{BPF}(f) = 1 \text{ для } f_{min} \leq f \leq f_{max}, \quad H_{BPF}(f) = 0 \text{ иначе}
 $$
 
 где $f_{min} = 60$ кГц, $f_{max} = 900$ кГц.
@@ -926,10 +931,7 @@ $$
 **Проверка на клиппинг:**
 
 $$
-\text{clipping} = \begin{cases}
-\text{True}, & |V_{VGA}| > V_{max,LNA} \\
-\text{False}, & \text{иначе}
-\end{cases}
+\text{clipping} = \text{True} \text{ если } |V_{VGA}| > V_{max,LNA}, \quad \text{clipping} = \text{False} \text{ иначе}
 $$
 
 ### 5.5. ADC (Analog-to-Digital Converter)
@@ -984,10 +986,7 @@ $$
 **Проверка на клиппинг ADC:**
 
 $$
-\text{clipping}_{ADC} = \begin{cases}
-\text{True}, & |x[n]| > V_{FS}/2 \\
-\text{False}, & \text{иначе}
-\end{cases}
+\text{clipping}_{ADC} = \text{True} \text{ если } |x[n]| > V_{FS}/2, \quad \text{clipping}_{ADC} = \text{False} \text{ иначе}
 $$
 
 **Ограничение сигнала перед квантованием:**
