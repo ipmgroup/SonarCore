@@ -4,6 +4,8 @@
 
 SonarCore is a comprehensive software platform for simulating and optimizing hydroacoustic sonar systems. It enables engineers and researchers to model underwater acoustic propagation, optimize CHIRP signal parameters, and analyze receiver chain performance before hardware implementation.
 
+**🌊 Part of [Open Deep Water](https://github.com/ipmgroup/Open_Deep_Water) initiative**
+
 ## 🎯 Key Features
 
 - **Physical Modeling**: Accurate simulation of underwater acoustic propagation using established models (Mackenzie, Francois-Garrison)
