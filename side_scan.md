@@ -76,14 +76,16 @@ $$
 **Математическое описание окон:**
 
 1. **None (Rectangular):**
-   $$
-   w(t) = 1, \quad 0 \leq t \leq T
-   $$
+
+$$
+w(t) = 1, \quad 0 \leq t \leq T
+$$
 
 2. **Hann:**
-   $$
-   w(t) = 0.5 \left(1 - \cos\left(\frac{2\pi t}{T}\right)\right), \quad 0 \leq t \leq T
-   $$
+
+$$
+w(t) = 0.5 \left(1 - \cos\left(\frac{2\pi t}{T}\right)\right), \quad 0 \leq t \leq T
+$$
 
 3. **Tukey:**
 
@@ -99,9 +101,10 @@ $$
      $$w(t) = \frac{1}{2}\left[1 + \cos\left(\frac{\pi}{\alpha T/2}\left(t - T + \frac{\alpha T}{2}\right)\right)\right]$$
 
 4. **RaisedCosine:**
-   $$
-   w(t) = \frac{1}{2}\left(1 - \cos\left(\frac{2\pi t}{T}\right)\right), \quad 0 \leq t \leq T
-   $$
+
+$$
+w(t) = \frac{1}{2}\left(1 - \cos\left(\frac{2\pi t}{T}\right)\right), \quad 0 \leq t \leq T
+$$
 
 **Влияние на сигнал:**
 
