@@ -282,11 +282,15 @@ $$
 Скорость звука в воде рассчитывается по формуле **Mackenzie (1981)**:
 
 $$
-\begin{align}
-c(T, S, P) &= 1448.96 + 4.591 \cdot T - 5.304 \times 10^{-2} \cdot T^2 + 2.374 \times 10^{-4} \cdot T^3 \\
-&\quad + 1.340 \cdot (S - 35) + 1.630 \times 10^{-2} \cdot P + 1.675 \times 10^{-7} \cdot P^2 \\
-&\quad - 1.025 \times 10^{-2} \cdot T \cdot (S - 35) - 7.139 \times 10^{-13} \cdot T \cdot P^3
-\end{align}
+c(T, S, P) = 1448.96 + 4.591 \cdot T - 5.304 \times 10^{-2} \cdot T^2 + 2.374 \times 10^{-4} \cdot T^3
+$$
+
+$$
++ 1.340 \cdot (S - 35) + 1.630 \times 10^{-2} \cdot P + 1.675 \times 10^{-7} \cdot P^2
+$$
+
+$$
+- 1.025 \times 10^{-2} \cdot T \cdot (S - 35) - 7.139 \times 10^{-13} \cdot T \cdot P^3
 $$
 
 где:
@@ -316,30 +320,45 @@ $$
 где $f_k = f / 1000$ — частота в кГц, $f$ — частота в Гц.
 
 **Вязкое поглощение** (первое слагаемое):
+
 $$
-\begin{align}
-A_1 &= 1.03 \times 10^{-8} + 2.36 \times 10^{-10} \cdot T - 5.22 \times 10^{-12} \cdot T^2 \\
-f_1 &= 1.32 \times 10^3 \cdot (T + 273.1) \cdot \exp\left(-\frac{1700}{T + 273.1}\right) \\
-P_1 &= 1.0
-\end{align}
+A_1 = 1.03 \times 10^{-8} + 2.36 \times 10^{-10} \cdot T - 5.22 \times 10^{-12} \cdot T^2
+$$
+
+$$
+f_1 = 1.32 \times 10^3 \cdot (T + 273.1) \cdot \exp\left(-\frac{1700}{T + 273.1}\right)
+$$
+
+$$
+P_1 = 1.0
 $$
 
 **Релаксационное поглощение бората** (второе слагаемое):
+
 $$
-\begin{align}
-A_2 &= 5.62 \times 10^{-8} \cdot \left(1.0 + 0.00654 \cdot (S - 35)\right) \\
-f_2 &= 1.55 \times 10^7 \cdot (T + 273.1) \cdot \exp\left(-\frac{3052}{T + 273.1}\right) \\
-P_2 &= 1.0 - 1.23 \times 10^{-4} \cdot P
-\end{align}
+A_2 = 5.62 \times 10^{-8} \cdot \left(1.0 + 0.00654 \cdot (S - 35)\right)
+$$
+
+$$
+f_2 = 1.55 \times 10^7 \cdot (T + 273.1) \cdot \exp\left(-\frac{3052}{T + 273.1}\right)
+$$
+
+$$
+P_2 = 1.0 - 1.23 \times 10^{-4} \cdot P
 $$
 
 **Релаксационное поглощение сульфата магния** (третье слагаемое):
+
 $$
-\begin{align}
-A_3 &= 3.38 \times 10^{-6} \cdot \exp\left(-\frac{2000}{T + 273.1}\right) \cdot \left(1.0 + 0.00654 \cdot (S - 35)\right) \\
-f_3 &= \frac{1.55 \times 10^7 \cdot (T + 273.1) \cdot \exp\left(-\frac{3052}{T + 273.1}\right)}{1.0 + 0.00654 \cdot (S - 35)} \\
-P_3 &= 1.0 - 3.83 \times 10^{-5} \cdot P + 4.9 \times 10^{-10} \cdot P^2
-\end{align}
+A_3 = 3.38 \times 10^{-6} \cdot \exp\left(-\frac{2000}{T + 273.1}\right) \cdot \left(1.0 + 0.00654 \cdot (S - 35)\right)
+$$
+
+$$
+f_3 = \frac{1.55 \times 10^7 \cdot (T + 273.1) \cdot \exp\left(-\frac{3052}{T + 273.1}\right)}{1.0 + 0.00654 \cdot (S - 35)}
+$$
+
+$$
+P_3 = 1.0 - 3.83 \times 10^{-5} \cdot P + 4.9 \times 10^{-10} \cdot P^2
 $$
 
 Результат в неперах на метр (Np/m), переводится в дБ/м:
