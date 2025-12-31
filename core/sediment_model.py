@@ -218,9 +218,17 @@ class SedimentModel:
         
         total_attenuation = 0.0
         
-        # Sum attenuation through all sediment layers up to interface
+        # Interface 0 is water-bottom (no sediment layers to traverse)
+        if interface_idx == 0:
+            return 0.0
+        
+        # Sum attenuation through sediment layers up to (but not including) interface
         # Path: bottom -> interface -> bottom (round-trip in sediment)
-        for i in range(interface_idx + 1):
+        # Interface i is at the boundary between layers i-1 and i
+        # So we sum attenuation only through layers 0 to i-1 (not including layer i)
+        # Example: Interface 1 (between layers 0 and 1) -> sum only layer 0
+        #          Interface 2 (between layers 1 and 2) -> sum layers 0 and 1
+        for i in range(interface_idx):
             layer = self.layers[i]
             # Get frequency-dependent attenuation
             if frequency is not None:

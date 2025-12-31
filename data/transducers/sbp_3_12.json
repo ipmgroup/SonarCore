@@ -22,7 +22,7 @@
   "_comment_T_rd": "Ring-down time, microseconds (longer for low frequency)",
   "Z": 50,
   "_comment_Z": "Nominal impedance, Ohms",
-  "V_max": 250,
+  "V_max": 2000,
   "_comment_V_max": "Maximum transmit voltage, Vrms at 10% duty cycle (for peak power: SL_max = S_TX + 20*log10(V_max) = 180 + 20*log10(250) ≈ 228 dB)",
   "V_nominal": 2000,
   "_comment_V_nominal": "Nominal transmit voltage, Vrms (for normal operation: SL = S_TX + 20*log10(V_nominal) = 180 + 20*log10(32) ≈ 210 dB)",

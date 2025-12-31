@@ -1,6 +1,6 @@
 {
   "G_min": 0,
-  "G_max": 40,
+  "G_max": 120,
   "delta_G": 1,
   "BW_VGA": 1000000,
   "T_set": 1e-6

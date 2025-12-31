@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional, List
 import numpy as np
 import pyqtgraph as pg
+from scipy import interpolate
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QLineEdit, QComboBox,
                              QGroupBox, QFormLayout, QTextEdit, QFileDialog,
@@ -865,13 +866,26 @@ class SBPWindow(QMainWindow):
                     raw_signal = np.array(output_dto.profile_raw_signal)
                     
                     # Interpolate raw signal to match depths array length if needed
+                    # Use interpolation instead of truncation/padding to preserve signal width
                     if len(raw_signal) != len(depths):
-                        if len(raw_signal) > len(depths):
-                            raw_signal = raw_signal[:len(depths)]
+                        # Create time axis for raw_signal (assumes same sampling rate as profile_depths)
+                        # Use interpolation to align with depths axis
+                        if len(raw_signal) > 1:
+                            # Create indices for original signal
+                            indices_orig = np.linspace(0, len(raw_signal) - 1, len(raw_signal))
+                            indices_new = np.linspace(0, len(raw_signal) - 1, len(depths))
+                            # Interpolate signal values
+                            interp_func = interpolate.interp1d(indices_orig, raw_signal, kind='linear', 
+                                                               bounds_error=False, fill_value=0.0)
+                            raw_signal = interp_func(indices_new)
                         else:
-                            padded = np.zeros(len(depths))
-                            padded[:len(raw_signal)] = raw_signal
-                            raw_signal = padded
+                            # Fallback: pad or truncate if signal is too short
+                            if len(raw_signal) > len(depths):
+                                raw_signal = raw_signal[:len(depths)]
+                            else:
+                                padded = np.zeros(len(depths))
+                                padded[:len(raw_signal)] = raw_signal
+                                raw_signal = padded
                     
                     # Plot raw signal (all reflections: water-bottom echo + all layer interfaces)
                     self.profile_plot.plot(depths, raw_signal, pen='c', name="All Reflections (RAW)")
@@ -967,13 +981,26 @@ class SBPWindow(QMainWindow):
                     raw_signal = np.array(output_dto.profile_raw_signal)
                     
                     # Interpolate raw signal to match depths array length if needed
+                    # Use interpolation instead of truncation/padding to preserve signal width
                     if len(raw_signal) != len(depths):
-                        if len(raw_signal) > len(depths):
-                            raw_signal = raw_signal[:len(depths)]
+                        # Create time axis for raw_signal (assumes same sampling rate as profile_depths)
+                        # Use interpolation to align with depths axis
+                        if len(raw_signal) > 1:
+                            # Create indices for original signal
+                            indices_orig = np.linspace(0, len(raw_signal) - 1, len(raw_signal))
+                            indices_new = np.linspace(0, len(raw_signal) - 1, len(depths))
+                            # Interpolate signal values
+                            interp_func = interpolate.interp1d(indices_orig, raw_signal, kind='linear', 
+                                                               bounds_error=False, fill_value=0.0)
+                            raw_signal = interp_func(indices_new)
                         else:
-                            padded = np.zeros(len(depths))
-                            padded[:len(raw_signal)] = raw_signal
-                            raw_signal = padded
+                            # Fallback: pad or truncate if signal is too short
+                            if len(raw_signal) > len(depths):
+                                raw_signal = raw_signal[:len(depths)]
+                            else:
+                                padded = np.zeros(len(depths))
+                                padded[:len(raw_signal)] = raw_signal
+                                raw_signal = padded
                     
                     # Filter: show only from water_depth (first echo) to end
                     mask = depths >= water_depth
@@ -1147,6 +1174,44 @@ class SBPWindow(QMainWindow):
     def _update_results_text(self, output_dto: OutputDTO):
         """Update results text."""
         text = "=== Simulation Results ===\n\n"
+        
+        # Transmission parameters
+        text += "=== Transmission Parameters ===\n"
+        if output_dto.signal_path and 'tx' in output_dto.signal_path:
+            tx = output_dto.signal_path['tx']
+            if 'voltage' in tx:
+                text += f"TX Voltage: {tx['voltage']:.2f} {tx.get('voltage_unit', 'V')}\n"
+            if 'spl' in tx:
+                text += f"Source Level (SL): {tx['spl']:.1f} {tx.get('spl_unit', 'dB re 1µPa @ 1m')}\n"
+            if 'power' in tx:
+                power_watts = tx['power']
+                text += f"TX Power: {power_watts:.3f} W"
+                if 'power_dbm' in tx:
+                    text += f" ({tx['power_dbm']:.1f} dBm)\n"
+                else:
+                    text += "\n"
+            if 'sensitivity' in tx:
+                text += f"TX Sensitivity: {tx['sensitivity']:.1f} {tx.get('sensitivity_unit', 'dB re 1µPa/V @ 1m')}\n"
+            if 'impedance' in tx:
+                text += f"TX Impedance: {tx['impedance']:.1f} {tx.get('impedance_unit', 'Ω')}\n"
+        
+        # Signal parameters (from signal_path summary)
+        if output_dto.signal_path and 'summary' in output_dto.signal_path:
+            summary = output_dto.signal_path['summary']
+            if 'f_start' in summary:
+                text += f"Frequency Start: {summary['f_start']/1000:.1f} kHz\n"
+            if 'f_end' in summary:
+                text += f"Frequency End: {summary['f_end']/1000:.1f} kHz\n"
+            if 'bandwidth' in summary:
+                text += f"Bandwidth: {summary['bandwidth']/1000:.1f} kHz\n"
+            if 'Tp_us' in summary:
+                text += f"Pulse Duration: {summary['Tp_us']/1000:.2f} ms\n"
+            elif 'Tp' in summary:
+                text += f"Pulse Duration: {summary['Tp']*1000:.2f} ms\n"
+            if 'window' in summary:
+                text += f"Window Function: {summary['window']}\n"
+        
+        text += "\n"
         
         # Receiver gain information
         text += "=== Receiver Gain ===\n"

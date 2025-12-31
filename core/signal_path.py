@@ -302,6 +302,13 @@ class SignalPathCalculator:
             'summary': {
                 'distance': D_target,  # Average distance (one-way)
                 'distance_unit': 'm',
+                # Signal parameters
+                'f_start': input_dto.signal.f_start,
+                'f_end': input_dto.signal.f_end,
+                'bandwidth': input_dto.signal.f_end - input_dto.signal.f_start,
+                'Tp': input_dto.signal.Tp * 1e-6,  # Convert from µs to seconds
+                'Tp_us': input_dto.signal.Tp,  # Keep in µs for display
+                'window': input_dto.signal.window,
                 # Forward path losses (one-way: TX -> bottom)
                 # For display: negative values (losses reduce signal)
                 'water_forward_loss': -TL_forward,  # One-way loss: spreading + absorption (negative for display)

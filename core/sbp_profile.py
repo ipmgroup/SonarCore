@@ -53,12 +53,45 @@ class SBPProfileGenerator:
         """
         Generate sub-bottom profile.
         
-        Formula: s_rx(t) = sum_i R_i * s_tx(t - τ_i) * A_i
+        Physical model: Medium (water + sediment) is modeled as a linear distributed system.
+        
+        Received signal: x(t) = s(t) * h(t) + n(t)
         
         where:
+        - s(t) is the transmitted CHIRP signal
+        - h(t) is the impulse response of the medium
+        - n(t) is noise
+        
+        Impulse response of medium (key point):
+        h(t) = Σ_k a_k * δ(t - τ_k)
+        
+        where:
+        - k=0: bottom (strongest reflector)
+        - k≥1: layers in sediment
+        - a_k: reflection coefficient of layer k
+        - τ_k = 2*z_k / c_eff: time delay to interface k
+        
+        ⚠️ Layers are NOT "extended signals", but delayed delta-responses.
+        
+        Real received signal (before correlation):
+        x(t) = Σ_k a_k * s(t - τ_k) + n(t)
+        
+        This is a sum of shifted CHIRP signals. Each interface creates a delayed copy
+        of the transmitted CHIRP signal with amplitude a_k.
+        
+        Implementation:
+        For each interface i:
+        - Calculate delay τ_i (time of flight to interface)
+        - Calculate amplitude a_i (reflection coefficient * attenuation)
+        - Place delayed copy: profile_signal[τ_i] += a_i * reference_signal
+        
+        Formula: s_rx(t) = Σ_i a_i * s_tx(t - τ_i)
+        
+        where:
+        - a_i: amplitude (R_i * T_cumulative * attenuation_factor)
         - R_i: reflection coefficient at interface i
-        - τ_i: time delay to interface i
-        - A_i: attenuation factor for round-trip through layers
+        - T_cumulative: cumulative transmission coefficient (product of T for all layers before interface)
+        - τ_i: time delay to interface i (round-trip time of flight)
         
         Args:
             reference_signal: Transmitted CHIRP signal
@@ -174,17 +207,23 @@ class SBPProfileGenerator:
         t_profile = np.arange(num_samples) / fs
         
         # Initialize profile signal
+        # This will contain the sum of all delayed CHIRP copies: x(t) = Σ_k a_k * s(t - τ_k)
         profile_signal = np.zeros(num_samples)
         
-        # Sum all reflections
+        # Sum all reflections (each interface creates a delayed copy of the CHIRP signal)
+        # Physical model: h(t) = Σ_k a_k * δ(t - τ_k)
+        # Received signal: x(t) = Σ_k a_k * s(t - τ_k) + n(t)
+        # Each layer is a delayed delta-response, NOT an extended signal
         for i in range(num_interfaces):
-            delay = interface_delays[i]
-            amplitude = interface_amplitudes[i]
+            delay = interface_delays[i]  # τ_i: time delay to interface i
+            amplitude = interface_amplitudes[i]  # a_i: reflection coefficient * attenuation
             
             # Find delay in samples
             delay_samples = int(delay * fs)
             
-            # Place reference signal at delay position
+            # Place delayed copy of reference signal at delay position
+            # This implements: x(t) += a_i * s(t - τ_i)
+            # Each interface creates a delayed copy of the transmitted CHIRP
             if delay_samples + len(reference_signal) <= len(profile_signal):
                 profile_signal[delay_samples:delay_samples + len(reference_signal)] += (
                     reference_signal * amplitude
@@ -304,17 +343,25 @@ class SBPProfileGenerator:
         # For now, use normalized correlation (consistent with other uses in core)
         
         # NOTE: Oscillations in correlation appear because:
-        # 1. profile_signal is a SUM of multiple reflections (not a single CHIRP):
-        #    profile_signal(t) = Σ A_i * reference(t - τ_i)
-        #    where: A_i = amplitude, τ_i = delay of i-th interface reflection
+        # 
+        # Physical model: x(t) = Σ_k a_k * s(t - τ_k) + n(t)
+        # where each interface creates a delayed copy of the CHIRP signal.
+        #
+        # 1. profile_signal is a SUM of multiple delayed CHIRP copies:
+        #    profile_signal(t) = Σ_i a_i * reference(t - τ_i)
+        #    where: a_i = amplitude (reflection coefficient * attenuation), τ_i = delay of i-th interface
+        #
         # 2. When correlating SUM with reference, we get interference between reflections:
-        #    correlate(Σ A_i * ref(t-τ_i), ref(t)) = Σ A_i * correlate(ref(t-τ_i), ref(t))
-        #    - Each reflection creates its own correlation peak
+        #    correlate(Σ_i a_i * ref(t-τ_i), ref(t)) = Σ_i a_i * correlate(ref(t-τ_i), ref(t))
+        #    - Each delayed CHIRP copy creates its own correlation peak
         #    - Peaks interfere with each other → oscillations between peaks
         #    - Overlapping correlation responses create interference patterns
+        #
         # 3. Note: Correlation of two IDENTICAL CHIRP signals gives smooth peak (no oscillations)
-        #    But here: received = sum of delayed/attenuated copies → oscillations appear
-        # 4. Envelope detection removes these oscillations and extracts peak amplitudes
+        #    But here: received = sum of delayed/attenuated CHIRP copies → oscillations appear
+        #
+        # 4. Envelope detection (|Hilbert(correlation)|) removes these oscillations 
+        #    and extracts peak amplitudes for each interface
         
         # Calculate envelope using Hilbert transform
         # Envelope removes high-frequency oscillations and extracts the amplitude envelope
