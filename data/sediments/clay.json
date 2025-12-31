@@ -1,0 +1,16 @@
+{
+  "_comment": "Clay sediment layer properties",
+  "name": "Clay",
+  "description": "Clay sediment layer - fine-grained, cohesive sediment",
+  "density": 1600,
+  "_comment_density": "Density, kg/m³",
+  "sound_speed": 1550,
+  "_comment_sound_speed": "Sound speed in layer, m/s",
+  "attenuation": 1.0,
+  "_comment_attenuation": "Attenuation coefficient, dB/m",
+  "default_thickness": 2.0,
+  "_comment_default_thickness": "Default layer thickness, m",
+  "source": "Typical values for clay from marine geology literature",
+  "version": "1.0"
+}
+

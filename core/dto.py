@@ -42,6 +42,27 @@ class SignalDTO(BaseModel):
         return v
 
 
+class SedimentLayerDTO(BaseModel):
+    """Single sediment layer parameters."""
+    thickness: float = Field(..., gt=0, description="Layer thickness, m")
+    density: float = Field(..., gt=0, description="Density, kg/m³")
+    sound_speed: float = Field(..., gt=0, description="Sound speed in layer, m/s")
+    attenuation: float = Field(..., ge=0, description="Attenuation coefficient, dB/m")
+    name: str = Field(default="", description="Layer name (optional)")
+
+
+class SedimentProfileDTO(BaseModel):
+    """Sediment profile (multi-layer model)."""
+    layers: List[SedimentLayerDTO] = Field(default_factory=list, description="List of sediment layers (from top to bottom)")
+    water_depth: float = Field(default=0.0, ge=0, description="Water depth above sediment, m")
+    
+    @validator('layers')
+    def validate_layers(cls, v):
+        if len(v) == 0:
+            raise ValueError("At least one sediment layer is required")
+        return v
+
+
 class EnvironmentDTO(BaseModel):
     """Environment parameters."""
     T: float = Field(..., ge=0, le=30, description="Temperature, °C")
@@ -86,6 +107,10 @@ class InputDTO(BaseModel):
     target_snr: Optional[float] = Field(default=20.0, ge=10, le=40, description="Target SNR at ADC output, dB (range: 10-40)")
     optimization_strategy: Optional[str] = Field(default="max_tp_min_vga", description="Optimization strategy: 'max_tp_min_vga' (use maximum Tp and find minimum VGA Gain) or 'min_tp_for_snr' (find minimum Tp for target SNR)")
     limit_tp_for_fast_calculation: Optional[bool] = Field(default=False, description="Limit Tp to 1 second for fast calculation when Tp > 1s")
+    # Sub-bottom profiling parameters
+    sediment_profile: Optional[SedimentProfileDTO] = Field(default=None, description="Sediment profile for SBP (if None, uses simple bottom reflection)")
+    enable_sbp: Optional[bool] = Field(default=False, description="Enable sub-bottom profiling mode")
+    snr_pre: Optional[float] = Field(default=-5.0, ge=-20, le=10, description="Pre-correlation SNR for SBP (typical: -5 to 0 dB for sediment), dB")
 
 
 class RecommendationsDTO(BaseModel):
@@ -122,6 +147,11 @@ class OutputDTO(BaseModel):
     lna_gain: Optional[float] = Field(default=None, description="LNA gain used in simulation, dB")
     vga_gain: Optional[float] = Field(default=None, description="VGA gain used in simulation, dB")
     vga_gain_max: Optional[float] = Field(default=None, description="VGA maximum gain, dB")
+    # ADC parameters
+    adc_full_scale: Optional[float] = Field(default=None, description="ADC full scale voltage (V_FS), V")
+    adc_range: Optional[float] = Field(default=None, description="ADC input range (±V_FS/2), V")
+    adc_bits: Optional[int] = Field(default=None, description="ADC resolution (bits)")
+    adc_dynamic_range: Optional[float] = Field(default=None, description="ADC dynamic range, dB")
     # Signal data for visualization (stored as lists for JSON serialization)
     tx_signal: Optional[List[float]] = Field(default=None, description="Transmitted signal (after TX transducer)")
     signal_at_bottom: Optional[List[float]] = Field(default=None, description="Signal at bottom (after channel, before reflection)")
@@ -134,4 +164,18 @@ class OutputDTO(BaseModel):
     attenuation_received_db: Optional[float] = Field(default=None, description="Signal attenuation at receiver relative to TX, dB (calculated in Core)")
     # ENOB calculation results (calculated AFTER optimization with recommended parameters)
     enob_results: Optional[Dict[str, Any]] = Field(default=None, description="ENOB calculation results dictionary")
+    # Sub-bottom profiling results
+    profile_amplitudes: Optional[List[float]] = Field(default=None, description="Sub-bottom profile amplitudes vs depth (envelope after matched filter), V")
+    profile_depths: Optional[List[float]] = Field(default=None, description="Sub-bottom profile depths, m")
+    profile_time_axis: Optional[List[float]] = Field(default=None, description="Sub-bottom profile time axis, s")
+    profile_raw_signal: Optional[List[float]] = Field(default=None, description="Raw sub-bottom profile signal (before matched filter), V")
+    profile_correlation: Optional[List[float]] = Field(default=None, description="Sub-bottom profile correlation signal (matched filter output), V")
+    profile_correlation_depths: Optional[List[float]] = Field(default=None, description="Depth axis for correlation signal (matches correlation length), m")
+    profile_water_depth: Optional[float] = Field(default=None, description="Water depth used for profile generation, m")
+    interface_depths: Optional[List[float]] = Field(default=None, description="Detected interface depths, m")
+    interface_amplitudes: Optional[List[float]] = Field(default=None, description="Detected interface reflection amplitudes, V")
+    max_penetration_depth: Optional[float] = Field(default=None, description="Maximum penetration depth in sediment, m")
+    vertical_resolution: Optional[float] = Field(default=None, description="Vertical resolution (minimum distinguishable layer thickness), m")
+    # Signal path data (from SignalPathCalculator)
+    signal_path: Optional[Dict[str, Any]] = Field(default=None, description="Complete signal path data with all losses (from SignalPathCalculator)")
 

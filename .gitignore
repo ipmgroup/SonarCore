@@ -29,8 +29,15 @@ logs/
 # VS Code settings можно коммитить, но не пользовательские настройки
 .vscode/settings.json.user
 
-# GUI settings - user-specific configuration file
+# GUI settings - user-specific configuration files
 gui.json
+sbp_config.json
 
 # Promotional files
 linkedin_promo.txt
+
+# Test plots (do not commit generated plots)
+tests/test_correlation_plots/
+tests/**/*.png
+tests/**/*.jpg
+tests/**/*.pdf

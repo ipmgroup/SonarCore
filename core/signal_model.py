@@ -4,6 +4,7 @@ SignalModel - CHIRP signal generation.
 
 import numpy as np
 from typing import Tuple
+from scipy import signal as scipy_signal
 
 
 class SignalModel:
@@ -17,7 +18,28 @@ class SignalModel:
     def generate_chirp(f_start: float, f_end: float, Tp: float, 
                       fs: float, window: str = 'Hann', limit_tp_for_fast_calc: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Generates CHIRP signal.
+        Generates CHIRP signal (reference signal for matched filtering).
+        
+        This generates the reference signal s_ref(t) for matched filter processing.
+        
+        The reference signal MUST have the same parameters as the transmitted signal:
+        - Same pulse duration T (Tp)
+        - Same frequency sweep (f_start, f_end)
+        - Same window function (Tukey or Hanning - mandatory for matched filtering!)
+        - Same sampling rate (fs)
+        
+        Signal formula:
+        s_ref(t) = w(t) * cos(2π * (f_start*t + (f_end-f_start)/(2*Tp)*t²))
+        
+        where:
+        - w(t) is the window function (Tukey or Hanning recommended)
+        - f_start: Start frequency, Hz
+        - f_end: End frequency, Hz
+        - Tp: Pulse duration, µs
+        - fs: Sampling frequency, Hz
+        
+        For matched filtering, Tukey (α≈0.25) or Hanning window is REQUIRED
+        to suppress side lobes in the correlation response.
         
         Args:
             f_start: Start frequency, Hz
@@ -25,10 +47,11 @@ class SignalModel:
             Tp: Pulse duration, µs
             fs: Sampling frequency, Hz
             window: Window function ('Rect', 'Hann', 'Tukey')
+                   Note: 'Tukey' or 'Hann' is REQUIRED for matched filtering
             limit_tp_for_fast_calc: If True and Tp > 1s, limit to 1s for fast calculation
         
         Returns:
-            Tuple (time axis, signal)
+            Tuple (time axis, signal) where signal is s_ref(t)
         """
         Tp_sec = Tp * 1e-6  # Convert from µs to seconds
         
@@ -60,7 +83,9 @@ class SignalModel:
         elif window == 'Hann':
             window_func = np.hanning(N)
         elif window == 'Tukey':
-            window_func = np.tukey(N, alpha=0.5)
+            # For SBP, use alpha=0.25 as recommended in SBP.md section 23.9
+            # This provides better side lobe suppression (≈-32 dB vs ≈-13 dB for Rect)
+            window_func = scipy_signal.windows.tukey(N, alpha=0.25)
         else:
             window_func = np.ones(N)
         

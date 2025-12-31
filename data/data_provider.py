@@ -18,6 +18,7 @@ class DataProvider:
     - LNA
     - VGA
     - ADC
+    - Типах грунтов (sediments)
     """
     
     def __init__(self, data_dir: Optional[str] = None):
@@ -45,6 +46,7 @@ class DataProvider:
         self._lna = {}
         self._vga = {}
         self._adc = {}
+        self._sediments = {}
     
     def _load_metadata(self) -> Dict:
         """Loads metadata."""
@@ -184,6 +186,38 @@ class DataProvider:
             return []
         
         return [f.stem for f in adc_dir.glob('*.json')]
+    
+    def get_sediment_layer(self, layer_type_id: str) -> Dict:
+        """
+        Gets sediment layer type parameters.
+        
+        Args:
+            layer_type_id: Sediment layer type ID (e.g., 'clay', 'silt', 'sand')
+        
+        Returns:
+            Dictionary with layer type properties (name, density, sound_speed, attenuation, default_thickness)
+        """
+        if layer_type_id in self._sediments:
+            return self._sediments[layer_type_id]
+        
+        file_path = self.data_dir / 'sediments' / f'{layer_type_id}.json'
+        if not file_path.exists():
+            raise ValueError(f"Sediment layer type {layer_type_id} not found")
+        
+        data = self._load_json(file_path)
+        self._sediments[layer_type_id] = data
+        return data
+    
+    def list_sediment_layers(self) -> List[str]:
+        """Returns list of available sediment layer types."""
+        sediments_dir = self.data_dir / 'sediments'
+        if not sediments_dir.exists():
+            return []
+        
+        # Exclude service files
+        excluded_files = {'index', 'example_sediment'}
+        return [f.stem for f in sediments_dir.glob('*.json') 
+                if f.stem not in excluded_files]
     
     def get_metadata(self) -> Dict:
         """Returns metadata."""

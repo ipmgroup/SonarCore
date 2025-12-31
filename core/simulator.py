@@ -16,6 +16,9 @@ from .dsp_model import DSPModel
 from .range_estimator import RangeEstimator
 from .optimizer import Optimizer
 from .enob_calculator import ENOBCalculator
+from .sediment_model import SedimentModel, SedimentLayer
+from .sbp_profile import SBPProfileGenerator
+from .signal_path import SignalPathCalculator
 
 
 class Simulator:
@@ -39,6 +42,7 @@ class Simulator:
         self.data_provider = data_provider
         self.water_model = WaterModel()
         self.optimizer = Optimizer(data_provider)  # Pass data_provider to optimizer
+        self.signal_path_calculator = SignalPathCalculator(data_provider)
         
         # Setup logging
         self.logger = logging.getLogger(__name__)
@@ -349,6 +353,15 @@ class Simulator:
                 D_measured = 0.0
                 sigma_D = 0.0
             
+            # Get ADC parameters for output (reuse adc_params from earlier if available, otherwise get it)
+            # Note: adc_params is already loaded above when creating receiver, but we reload here for clarity
+            adc_params_output = self._get_adc(input_dto.hardware.adc_id)
+            adc_full_scale = adc_params_output.get('V_FS', 2.0)
+            adc_range = adc_full_scale / 2.0  # ±V_FS/2
+            # ADC resolution: try 'N' first (used by ReceiverModel), then 'bits'
+            adc_bits = adc_params_output.get('N', adc_params_output.get('bits', 16))
+            adc_dynamic_range_db = 20 * np.log10(2 ** adc_bits)  # dB
+            
             # Create output DTO with signal data for visualization
             # Five stages for visualization:
             # 1. tx_signal: Original CHIRP signal (reference_signal_vis - fixed f_s for visualization)
@@ -426,6 +439,333 @@ class Simulator:
                 if signal_max_received > epsilon and reference_max > epsilon:
                     attenuation_received_db = 20 * np.log10(signal_max_received / reference_max)
             
+            # Generate SBP profile if enabled
+            profile_amplitudes = None
+            profile_depths = None
+            profile_time_axis = None
+            profile_raw_signal = None  # Raw profile signal before matched filter
+            profile_correlation = None  # Correlation signal (matched filter output)
+            profile_water_depth = None  # Water depth for filtering
+            interface_depths = None
+            interface_amplitudes = None
+            max_penetration_depth = None
+            vertical_resolution = None
+            sediment_model = None  # Initialize for use in signal_path calculation
+            
+            if getattr(input_dto, 'enable_sbp', False) and input_dto.sediment_profile:
+                try:
+                    # Create sediment model from DTO
+                    sediment_layers = []
+                    for layer_dto in input_dto.sediment_profile.layers:
+                        layer = SedimentLayer(
+                            thickness=layer_dto.thickness,
+                            density=layer_dto.density,
+                            sound_speed=layer_dto.sound_speed,
+                            attenuation=layer_dto.attenuation,
+                            name=layer_dto.name
+                        )
+                        sediment_layers.append(layer)
+                    
+                    sediment_model = SedimentModel(sediment_layers)
+                    
+                    # Create profile generator with DSPModel for matched filtering
+                    # Use the same DSPModel that was created earlier for consistency
+                    profile_generator = SBPProfileGenerator(self.water_model, dsp_model=dsp)
+                    
+                    # Generate profile
+                    water_depth = input_dto.sediment_profile.water_depth if input_dto.sediment_profile.water_depth > 0 else input_dto.environment.z
+                    profile_water_depth = water_depth  # Store for filtering in GUI
+                    
+                    # Calculate center frequency for profile generation
+                    f_center_profile = (input_dto.signal.f_start + input_dto.signal.f_end) / 2
+                    
+                    profile_signal, profile_depths_array, interface_depths_list, interface_amps_list = profile_generator.generate_profile(
+                        reference_signal=reference_signal,
+                        t_reference=t_ref,
+                        sediment_model=sediment_model,
+                        water_depth=water_depth,
+                        T=input_dto.environment.T,
+                        S=input_dto.environment.S,
+                        z=input_dto.environment.z,
+                        fs=input_dto.signal.sample_rate,
+                        f_center=f_center_profile,
+                        apply_tvg=True
+                    )
+                    
+                    # Apply receiver chain to profile signal (same as regular echosounder)
+                    # profile_signal is in relative amplitude units (after all losses)
+                    # Need to convert to pressure, then to voltage, then through receiver chain
+                    
+                    # Step 1: Scale to source pressure level
+                    # Get TX sensitivity and voltage to calculate source level
+                    S_TX = transducer.get_tx_sensitivity(f_center_profile)
+                    # Get transducer parameters from data provider
+                    transducer_params = self.data_provider.get_transducer(input_dto.hardware.transducer_id)
+                    tx_voltage = transducer_params.get('V_max')
+                    if tx_voltage is None:
+                        tx_voltage = transducer_params.get('V_nominal')
+                    if tx_voltage is None:
+                        tx_voltage = transducer_params.get('V', 100.0)
+                    # Source Level (SL) = S_TX + 20*log10(V)
+                    # At 1m: pressure = 10^((S_TX + 20*log10(V))/20) = V * 10^(S_TX/20) (linear)
+                    source_pressure_at_1m = tx_voltage * (10 ** (S_TX / 20))  # Relative units (normalized to reference)
+                    
+                    # profile_signal is already scaled by losses, so multiply by source level
+                    # to get pressure at receiver (in relative units, normalized to 1µPa reference)
+                    profile_signal_pressure = profile_signal * source_pressure_at_1m
+                    
+                    # Step 2: Apply RX sensitivity to convert pressure to voltage
+                    S_RX = transducer.get_rx_sensitivity(f_center_profile)
+                    profile_signal_voltage = profile_signal_pressure * (10 ** (S_RX / 20))
+                    
+                    # Step 3: Resample to ADC sampling rate (same as regular echosounder)
+                    adc_fs = adc_params['f_s']
+                    signal_fs = input_dto.signal.sample_rate
+                    
+                    if signal_fs != adc_fs:
+                        t_profile = len(profile_signal_voltage) / signal_fs
+                        num_samples_adc = int(t_profile * adc_fs)
+                        profile_signal_adc = scipy_signal.resample(profile_signal_voltage, num_samples_adc)
+                        # Also resample profile_depths_array to match
+                        profile_depths_adc = np.interp(
+                            np.linspace(0, len(profile_depths_array)-1, num_samples_adc),
+                            np.arange(len(profile_depths_array)),
+                            profile_depths_array
+                        )
+                    else:
+                        profile_signal_adc = profile_signal_voltage
+                        profile_depths_adc = profile_depths_array
+                    
+                    # Step 4: Process through receiver chain (LNA, VGA, ADC)
+                    # Set VGA gain from parameter or use average
+                    if vga_gain is not None:
+                        receiver.set_vga_gain(vga_gain)
+                    else:
+                        receiver.set_vga_gain((vga_params['G_min'] + vga_params['G_max']) / 2)
+                    
+                    # Process signal through receiver
+                    profile_signal_digital, snr_adc_profile, clipping_profile, signal_after_lna_profile, signal_after_vga_profile = receiver.process_signal(
+                        profile_signal_adc, add_noise=True
+                    )
+                    
+                    # For display: use signal at ADC input (signal_after_vga) - this is what ADC sees
+                    profile_signal_at_adc = signal_after_vga_profile
+                    
+                    # Resample back to original sampling rate for display (if needed)
+                    if signal_fs != adc_fs:
+                        num_samples_orig = len(profile_signal)
+                        profile_signal_at_adc_display = scipy_signal.resample(profile_signal_at_adc, num_samples_orig)
+                        profile_depths_display = profile_depths_array  # Use original depths
+                    else:
+                        profile_signal_at_adc_display = profile_signal_at_adc
+                        profile_depths_display = profile_depths_array
+                    
+                    # Process with matched filter (on signal at ADC input)
+                    # Resample reference_signal to match profile_signal_at_adc_display sampling rate
+                    if signal_fs != adc_fs:
+                        t_ref_len = len(reference_signal) / signal_fs
+                        num_samples_ref_display = int(t_ref_len * signal_fs)
+                        reference_signal_display = scipy_signal.resample(reference_signal, num_samples_ref_display)
+                    else:
+                        reference_signal_display = reference_signal
+                    
+                    # Log sampling rates for debugging correlation depth issues
+                    self.logger.info(f"SBP correlation: signal_fs={signal_fs:.0f}Hz, adc_fs={adc_fs:.0f}Hz, "
+                                   f"profile_signal_at_adc_display length={len(profile_signal_at_adc_display)}, "
+                                   f"reference_signal_display length={len(reference_signal_display)}")
+                    
+                    processed_signal, envelope, correlation_lags = profile_generator.process_profile_with_matched_filter(
+                        profile_signal_at_adc_display, reference_signal_display, signal_fs
+                    )
+                    
+                    # Convert correlation lags to time axis, then to depth axis
+                    # correlation_lags are lag indices (shifts in samples)
+                    # lag = k means reference[0] aligns with profile_signal[k]
+                    # Time for correlation: t = lag / fs (where lag is the shift)
+                    # NOTE: Using signal_fs because correlation was performed on signals at signal_fs
+                    # (after resampling back from adc_fs if needed)
+                    correlation_time = correlation_lags / signal_fs
+                    
+                    # Log for debugging correlation depth calculation
+                    if len(correlation_time) > 0:
+                        self.logger.info(f"SBP correlation time: min={np.min(correlation_time):.6f}s, "
+                                       f"max={np.max(correlation_time):.6f}s, "
+                                       f"using signal_fs={signal_fs:.0f}Hz for time calculation")
+                    
+                    # Convert time to depth using water sound speed
+                    # Use c_water for correlation depths (correlation happens in water column)
+                    c_water = self.water_model.calculate_sound_speed(
+                        input_dto.environment.T, 
+                        input_dto.environment.S, 
+                        self.water_model.calculate_pressure(input_dto.environment.z)
+                    )
+                    
+                    # Convert correlation_time to depths: depth = c * t / 2 (round-trip to one-way)
+                    # For negative times (negative lags), set depth to 0
+                    # Use np.where to handle negative times, then clamp to ensure no negative depths
+                    correlation_depths = np.where(
+                        correlation_time >= 0,
+                        c_water * correlation_time / 2,  # Round-trip to one-way, using water sound speed
+                        0.0  # Negative times correspond to reference starting before profile
+                    )
+                    # Clamp to ensure no negative depths (handle any numerical precision issues)
+                    correlation_depths = np.maximum(correlation_depths, 0.0)
+                    
+                    # Log correlation depths range for debugging
+                    if len(correlation_depths) > 0:
+                        self.logger.info(f"SBP correlation_depths range: min={np.min(correlation_depths):.2f}m, "
+                                       f"max={np.max(correlation_depths):.2f}m, "
+                                       f"expected water_depth={water_depth:.2f}m, c_water={c_water:.2f}m/s")
+                    
+                    # Find all echoes (interfaces) from correlation peaks
+                    # All distances to echoes are determined by correlation between received signal and reference signal
+                    # Each peak in correlation indicates best match position = echo from an interface
+                    # IMPORTANT: Use correlation_depths (not profile_depths_display) because correlation has different length (mode='full')
+                    detected_echo_depths, detected_echo_amplitudes = profile_generator.find_all_echoes_from_correlation(
+                        processed_signal, correlation_depths, min_height=0.1
+                    )
+                    
+                    # Log detected echo details for debugging
+                    if len(detected_echo_depths) > 0:
+                        self.logger.info(f"SBP detected echoes: {len(detected_echo_depths)} echoes found")
+                        for i, (depth, amp) in enumerate(zip(detected_echo_depths, detected_echo_amplitudes)):
+                            self.logger.info(f"  Echo {i}: depth={depth:.2f}m, amplitude={amp:.6f}")
+                    
+                    if len(detected_echo_depths) > 0:
+                        # Use detected depths and amplitudes from correlation
+                        # detected_echo_depths are full depths from surface
+                        # Convert to depths in sediment (from bottom) for consistency with interface_depths_list
+                        detected_water_depth = detected_echo_depths[0]  # First echo is water-bottom
+                        profile_water_depth = detected_water_depth
+                        
+                        # Convert full depths to depths in sediment (relative to water-bottom)
+                        # First echo (index 0) is at water-bottom, so depth_in_sediment = 0
+                        # Subsequent echoes are at full_depth - water_depth
+                        interface_depths = [0.0]  # First interface (water-bottom) is at 0 in sediment
+                        interface_amplitudes = [detected_echo_amplitudes[0]] if len(detected_echo_amplitudes) > 0 else [0.0]
+                        
+                        for i in range(1, len(detected_echo_depths)):
+                            depth_in_sediment = detected_echo_depths[i] - detected_water_depth
+                            if depth_in_sediment > 0:  # Only add if in sediment
+                                interface_depths.append(depth_in_sediment)
+                                if i < len(detected_echo_amplitudes):
+                                    interface_amplitudes.append(detected_echo_amplitudes[i])
+                                else:
+                                    interface_amplitudes.append(0.0)
+                        
+                        self.logger.info(f"Detected {len(detected_echo_depths)} echoes from correlation: "
+                                       f"water-bottom at {detected_water_depth:.2f} m, "
+                                       f"{len(interface_depths)-1} layer interfaces")
+                    else:
+                        # Fallback: use theoretical positions if no echoes detected
+                        detected_water_depth = water_depth
+                        profile_water_depth = detected_water_depth
+                        interface_depths = interface_depths_list  # Depths in sediment (from bottom)
+                        interface_amplitudes = interface_amps_list  # Theoretical amplitudes
+                        self.logger.warning(f"No echoes detected in correlation, using theoretical depths")
+                    
+                    # Optionally detect interfaces in processed signal for validation
+                    # detected_depths, detected_amplitudes = profile_generator.detect_interfaces(
+                    #     envelope, profile_depths_array
+                    # )
+                    
+                    # Calculate vertical resolution
+                    bandwidth = SignalModel.get_bandwidth(input_dto.signal.f_start, input_dto.signal.f_end)
+                    avg_sound_speed = np.mean([layer.sound_speed for layer in sediment_layers])
+                    vertical_resolution = profile_generator.calculate_vertical_resolution(bandwidth, avg_sound_speed)
+                    
+                    # Calculate max penetration depth (simplified)
+                    # Use sonar equation
+                    source_level_db = S_TX + 20 * np.log10(tx_voltage)  # dB re 1µPa @ 1m
+                    noise_level = 80.0  # Typical noise level, dB
+                    processing_gain = 10 * np.log10(bandwidth * input_dto.signal.Tp * 1e-6)
+                    water_tl = self.water_model.calculate_transmission_loss(
+                        2 * water_depth, f_center_profile, 
+                        input_dto.environment.T, 
+                        input_dto.environment.S, 
+                        input_dto.environment.z
+                    )
+                    max_penetration_depth = sediment_model.get_max_penetration_depth(
+                        source_level_db, noise_level, processing_gain, water_tl
+                    )
+                    
+                    # NOTE: correlation_depths was already computed above (after correlation processing)
+                    # and used for find_all_echoes_from_correlation. We reuse the same correlation_depths
+                    # for profile_correlation_depths (no need to recompute).
+                    
+                    # Convert to lists for JSON serialization
+                    profile_amplitudes = envelope.tolist()  # Envelope for main profile display (smooth, no oscillations)
+                    profile_depths = profile_depths_display.tolist()  # Full depths from surface (water_depth + depth_in_sediment for sediment layers)
+                    profile_time_axis = (np.arange(len(profile_signal_at_adc_display)) / signal_fs).tolist()
+                    # Raw signal contains all reflections: first echo (water-bottom) + all layer interfaces
+                    # profile_signal_at_adc_display is signal at ADC input (after receiver chain: LNA, VGA)
+                    profile_raw_signal = np.abs(profile_signal_at_adc_display).tolist()  # Signal at ADC input (all reflections before matched filter)
+                    # Correlation signal (matched filter output - correlation of received signal with reference CHIRP)
+                    # Note: correlation has length = len(profile_signal) + len(reference) - 1 (mode='full')
+                    # correlation_depths provides the correct depth axis for correlation
+                    # This is the raw correlation output (can have oscillations), not envelope
+                    profile_correlation = processed_signal.tolist()  # Correlation signal (matched filter output)
+                    profile_correlation_depths = correlation_depths.tolist()  # Depth axis for correlation
+                    
+                    self.logger.info(f"SBP profile generated: {len(interface_depths)} interfaces detected "
+                                   f"(first echo: water-bottom at {interface_depths[0]:.2f}m, "
+                                   f"then {len(interface_depths)-1} layer interfaces), "
+                                   f"max penetration: {max_penetration_depth:.2f} m, "
+                                   f"vertical resolution: {vertical_resolution:.4f} m")
+                    
+                except Exception as e:
+                    self.logger.error(f"SBP profile generation failed: {e}", exc_info=True)
+                    # Continue without profile data
+            
+            # Calculate complete signal path using SignalPathCalculator (from core)
+            # All calculations are done in core - GUI only receives ready data
+            try:
+                # For SBP, use reflection coefficient from first interface (water-sediment)
+                # This is calculated from impedances, not from environment.bottom_reflection
+                # First interface is water-sediment boundary (first layer)
+                if getattr(input_dto, 'enable_sbp', False) and input_dto.sediment_profile and sediment_model is not None:
+                    # Calculate reflection coefficient from first layer (water-sediment interface)
+                    # Water impedance
+                    P_water = self.water_model.calculate_pressure(input_dto.environment.z)
+                    c_water = self.water_model.calculate_sound_speed(
+                        input_dto.environment.T,
+                        input_dto.environment.S,
+                        P_water
+                    )
+                    rho_water = 1025.0  # kg/m³
+                    water_impedance = rho_water * c_water
+                    
+                    # First sediment layer impedance
+                    first_layer = sediment_model.layers[0]  # Get first layer from layers list
+                    sediment_impedance = first_layer.impedance
+                    
+                    # Reflection coefficient at water-sediment interface
+                    R_linear = (sediment_impedance - water_impedance) / (sediment_impedance + water_impedance)
+                    R_dB = 20 * np.log10(abs(R_linear)) if abs(R_linear) > 1e-10 else -np.inf
+                    
+                    # Update input_dto temporarily to use calculated reflection coefficient
+                    original_bottom_reflection = input_dto.environment.bottom_reflection
+                    input_dto.environment.bottom_reflection = R_dB
+                    
+                    signal_path_data = self.signal_path_calculator.calculate_signal_path(
+                        input_dto,
+                        lna_gain=receiver.G_LNA,
+                        vga_gain=receiver.current_G_VGA
+                    )
+                    
+                    # Restore original value
+                    input_dto.environment.bottom_reflection = original_bottom_reflection
+                else:
+                    # For regular sonar, use bottom_reflection from environment
+                    signal_path_data = self.signal_path_calculator.calculate_signal_path(
+                        input_dto,
+                        lna_gain=receiver.G_LNA,
+                        vga_gain=receiver.current_G_VGA
+                    )
+            except Exception as e:
+                self.logger.warning(f"Failed to calculate signal path: {e}", exc_info=True)
+                signal_path_data = None
+            
             # Convert numpy arrays to lists for JSON serialization
             output_dto = OutputDTO(
                 D_measured=D_measured,
@@ -435,6 +775,10 @@ class Simulator:
                 lna_gain=receiver.G_LNA,  # LNA gain used in simulation
                 vga_gain=receiver.current_G_VGA,  # VGA gain used in simulation
                 vga_gain_max=receiver.G_VGA_max,  # VGA maximum gain
+                adc_full_scale=adc_full_scale,  # ADC full scale voltage (V_FS), V
+                adc_range=adc_range,  # ADC input range (±V_FS/2), V
+                adc_bits=adc_bits,  # ADC resolution (bits)
+                adc_dynamic_range=adc_dynamic_range_db,  # ADC dynamic range, dB
                 tx_signal=reference_signal_vis.tolist() if len(reference_signal_vis) > 0 else None,  # Stage 1: Original CHIRP (visualization)
                 signal_at_bottom=signal_after_water_forward.tolist() if len(signal_after_water_forward) > 0 else None,  # Stage 2: After water forward
                 received_signal=signal_after_water_backward.tolist() if len(signal_after_water_backward) > 0 else None,  # Stage 3: After water backward
@@ -442,7 +786,20 @@ class Simulator:
                 signal_after_vga=signal_after_vga_vis.tolist() if len(signal_after_vga_vis) > 0 else None,  # Stage 5: After VGA (resampled)
                 time_axis=t_ref_vis.tolist() if len(t_ref_vis) > 0 else None,  # Visualization time axis
                 attenuation_at_bottom_db=attenuation_at_bottom_db,  # Calculated in Core
-                attenuation_received_db=attenuation_received_db  # Calculated in Core
+                attenuation_received_db=attenuation_received_db,  # Calculated in Core
+                # SBP profile data
+                profile_amplitudes=profile_amplitudes,
+                profile_depths=profile_depths,
+                profile_time_axis=profile_time_axis,
+                profile_raw_signal=profile_raw_signal,
+                profile_correlation=profile_correlation if 'profile_correlation' in locals() else None,
+                profile_correlation_depths=profile_correlation_depths if 'profile_correlation_depths' in locals() else None,
+                profile_water_depth=profile_water_depth,
+                interface_depths=interface_depths,
+                interface_amplitudes=interface_amplitudes,
+                max_penetration_depth=max_penetration_depth,
+                vertical_resolution=vertical_resolution,
+                signal_path=signal_path_data  # Complete signal path data
             )
             
             # Analyze results and generate recommendations

@@ -1,0 +1,12 @@
+{
+  "total_types": 6,
+  "types": [
+    "clay",
+    "silt",
+    "sand",
+    "soft_clay",
+    "gravel",
+    "mud"
+  ]
+}
+

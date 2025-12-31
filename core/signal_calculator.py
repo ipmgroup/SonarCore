@@ -174,6 +174,53 @@ class SignalCalculator:
         
         return Tp_optimal_us
     
+    def calculate_optimal_tp_for_sbp_snr(self, f_start: float, f_end: float,
+                                         snr_pre: float, snr_post_min: float = 10.0) -> float:
+        """
+        Calculate optimal pulse duration Tp based on SNR requirements for SBP.
+        
+        Formula from SBP.md section 23:
+        - SNR_post = SNR_pre + PG
+        - PG = 10*log10(B*T)
+        - For SNR_post >= snr_post_min, we need: PG >= snr_post_min - snr_pre
+        - Therefore: 10*log10(B*T) >= snr_post_min - snr_pre
+        - Solving: T >= 10^((snr_post_min - snr_pre)/10) / B
+        
+        Args:
+            f_start: Start frequency, Hz
+            f_end: End frequency, Hz
+            snr_pre: Pre-correlation SNR (typical: -5 to 0 dB for sediment), dB
+            snr_post_min: Minimum required post-correlation SNR (default: 10 dB), dB
+        
+        Returns:
+            Optimal pulse duration, ms (milliseconds)
+        """
+        from .signal_model import SignalModel
+        
+        # Calculate bandwidth
+        bandwidth = SignalModel.get_bandwidth(f_start, f_end)
+        
+        if bandwidth <= 0:
+            return float('inf')
+        
+        # Calculate required processing gain
+        required_pg = snr_post_min - snr_pre
+        
+        # From PG = 10*log10(B*T), we get:
+        # B*T >= 10^(PG/10)
+        # T >= 10^(PG/10) / B
+        bt_product = 10 ** (required_pg / 10.0)
+        T_min_sec = bt_product / bandwidth
+        
+        # Convert to milliseconds
+        T_min_ms = T_min_sec * 1000.0
+        
+        # Add 10-20% margin for robustness (recommended range: 3.5-4.5 ms from section 23.7)
+        # Use 20% margin to stay within optimal range
+        T_optimal_ms = T_min_ms * 1.2
+        
+        return T_optimal_ms
+    
     def adjust_chirp_to_transducer(self, transducer_params: Dict, 
                                    bandwidth_ratio: float = 0.8) -> Tuple[float, float]:
         """

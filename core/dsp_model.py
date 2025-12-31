@@ -28,16 +28,36 @@ class DSPModel:
     
     def matched_filter(self, received: np.ndarray, reference: np.ndarray) -> np.ndarray:
         """
-        Performs matched filtering.
+        Performs matched filtering (optimal filter for CHIRP in additive noise).
+        
+        Optimal processing for CHIRP in additive noise is the matched filter:
+        
+        y(t) = ∫ x(τ) * s_ref*(τ - t) dτ
+        
+        where:
+        - x(t) is the received signal
+        - s_ref(t) is the reference CHIRP signal
+        - * denotes complex conjugation (for real signals, this is just time-reversal)
+        
+        The reference signal MUST have:
+        - Same pulse duration T
+        - Same frequency sweep (f_start, f_end)
+        - Same window function (Tukey or Hanning, required!)
+        - Same sampling rate (fs)
+        
+        Example reference signal:
+        s_ref(t) = w(t) * cos(2π * (f0*t + (B/(2*T))*t²))
+        
+        where w(t) is Tukey or Hanning window (mandatory!)
         
         Uses FFT-based correlation for large arrays (more efficient than np.correlate).
         
         Args:
-            received: Received signal
-            reference: Reference signal (CHIRP)
+            received: Received signal x(t)
+            reference: Reference CHIRP signal s_ref(t) (must match transmitted signal parameters)
         
         Returns:
-            Matched filter response
+            Matched filter response (correlation output)
         """
         # For large arrays, use FFT-based correlation (much faster)
         # Threshold: if arrays are large (>100k samples), use FFT

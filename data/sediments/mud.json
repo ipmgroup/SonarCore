@@ -1,0 +1,12 @@
+{
+  "_comment": "Mud sediment layer properties",
+  "name": "Mud",
+  "description": "Mud sediment layer - mixture of clay and silt",
+  "density": 1650,
+  "sound_speed": 1520,
+  "attenuation": 1.5,
+  "default_thickness": 2.0,
+  "source": "Typical values for mud",
+  "version": "1.0"
+}
+

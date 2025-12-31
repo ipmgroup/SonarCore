@@ -1,0 +1,12 @@
+{
+  "_comment": "Sand sediment layer properties",
+  "name": "Sand",
+  "description": "Sand sediment layer - coarse-grained sediment",
+  "density": 2000,
+  "sound_speed": 1700,
+  "attenuation": 3.0,
+  "default_thickness": 5.0,
+  "source": "Typical values for sand from marine geology literature",
+  "version": "1.0"
+}
+

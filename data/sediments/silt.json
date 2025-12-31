@@ -1,0 +1,12 @@
+{
+  "_comment": "Silt sediment layer properties",
+  "name": "Silt",
+  "description": "Silt sediment layer - medium-grained sediment between clay and sand",
+  "density": 1800,
+  "sound_speed": 1600,
+  "attenuation": 2.0,
+  "default_thickness": 3.0,
+  "source": "Typical values for silt from marine geology literature",
+  "version": "1.0"
+}
+

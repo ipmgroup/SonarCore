@@ -1,0 +1,12 @@
+{
+  "_comment": "Gravel sediment layer properties",
+  "name": "Gravel",
+  "description": "Gravel sediment layer - very coarse-grained sediment",
+  "density": 2400,
+  "sound_speed": 1900,
+  "attenuation": 5.0,
+  "default_thickness": 4.0,
+  "source": "Typical values for gravel",
+  "version": "1.0"
+}
+
