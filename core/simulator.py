@@ -492,6 +492,19 @@ class Simulator:
                         apply_tvg=True
                     )
                     
+                    # Log theoretical interface amplitudes for debugging
+                    self.logger.info(f"SBP theoretical interfaces: {len(interface_depths_list)} interfaces")
+                    if len(interface_amps_list) > 0:
+                        max_theoretical_amp = max(interface_amps_list)
+                        for i, (depth, amp) in enumerate(zip(interface_depths_list, interface_amps_list)):
+                            amp_relative = amp / max_theoretical_amp if max_theoretical_amp > 0 else 0.0
+                            full_depth = water_depth + depth
+                            # Check if amplitude is above detection threshold (1% of max)
+                            detectable = amp_relative >= 0.01
+                            self.logger.info(f"  Interface {i}: depth_in_sediment={depth:.2f}m (full_depth={full_depth:.2f}m), "
+                                           f"amplitude={amp:.6e}, relative_to_max={amp_relative:.4f} ({amp_relative*100:.2f}%), "
+                                           f"detectable={'YES' if detectable else 'NO (below 1% threshold)'}")
+                    
                     # Apply receiver chain to profile signal (same as regular echosounder)
                     # profile_signal is in relative amplitude units (after all losses)
                     # Need to convert to pressure, then to voltage, then through receiver chain
@@ -621,37 +634,66 @@ class Simulator:
                     # All distances to echoes are determined by correlation between received signal and reference signal
                     # Each peak in correlation indicates best match position = echo from an interface
                     # IMPORTANT: Use correlation_depths (not profile_depths_display) because correlation has different length (mode='full')
+                    # Use lower threshold (0.01 = 1%) to detect weak sediment layer reflections
+                    # Sediment layer reflections are much weaker than water-bottom echo due to attenuation
                     detected_echo_depths, detected_echo_amplitudes = profile_generator.find_all_echoes_from_correlation(
-                        processed_signal, correlation_depths, min_height=0.1
+                        processed_signal, correlation_depths, min_height=0.01
                     )
                     
                     # Log detected echo details for debugging
                     if len(detected_echo_depths) > 0:
                         self.logger.info(f"SBP detected echoes: {len(detected_echo_depths)} echoes found")
                         for i, (depth, amp) in enumerate(zip(detected_echo_depths, detected_echo_amplitudes)):
-                            self.logger.info(f"  Echo {i}: depth={depth:.2f}m, amplitude={amp:.6f}")
+                            # Calculate expected depth for each interface for comparison
+                            if i == 0:
+                                expected_depth = water_depth
+                                expected_interface = "water-bottom (interface 0)"
+                            else:
+                                # Expected depths: interface 1 at 2m, interface 2 at 6m in sediment
+                                expected_depths = [water_depth + 2.0, water_depth + 6.0]  # Mud-Gravel, Gravel-Sand
+                                if i - 1 < len(expected_depths):
+                                    expected_depth = expected_depths[i-1]
+                                    expected_interface = f"interface {i} (expected at {expected_depths[i-1]:.2f}m)"
+                                else:
+                                    expected_depth = None
+                                    expected_interface = f"unknown (possibly artifact)"
+                            
+                            if expected_depth is not None:
+                                depth_diff = abs(depth - expected_depth)
+                                self.logger.info(f"  Echo {i}: depth={depth:.2f}m (expected {expected_interface}: {expected_depth:.2f}m, diff={depth_diff:.2f}m), amplitude={amp:.6f}")
+                            else:
+                                self.logger.info(f"  Echo {i}: depth={depth:.2f}m, amplitude={amp:.6f} (possibly artifact)")
                     
                     if len(detected_echo_depths) > 0:
                         # Use detected depths and amplitudes from correlation
-                        # detected_echo_depths are full depths from surface
-                        # Convert to depths in sediment (from bottom) for consistency with interface_depths_list
-                        detected_water_depth = detected_echo_depths[0]  # First echo is water-bottom
+                        # IMPORTANT: The first detected echo (index 0) may NOT be the water-bottom echo!
+                        # Artifacts from correlation can appear before the actual first echo.
+                        # The water-bottom echo should have the maximum amplitude (strongest reflection).
+                        # Find the echo with maximum amplitude - this should be the water-bottom echo
+                        max_amp_idx = np.argmax(detected_echo_amplitudes)
+                        detected_water_depth = detected_echo_depths[max_amp_idx]
                         profile_water_depth = detected_water_depth
                         
-                        # Convert full depths to depths in sediment (relative to water-bottom)
-                        # First echo (index 0) is at water-bottom, so depth_in_sediment = 0
-                        # Subsequent echoes are at full_depth - water_depth
-                        interface_depths = [0.0]  # First interface (water-bottom) is at 0 in sediment
-                        interface_amplitudes = [detected_echo_amplitudes[0]] if len(detected_echo_amplitudes) > 0 else [0.0]
+                        self.logger.info(f"SBP water-bottom detection: Echo {max_amp_idx} at depth {detected_water_depth:.2f}m "
+                                       f"has maximum amplitude {detected_echo_amplitudes[max_amp_idx]:.6f} "
+                                       f"(expected water depth: {water_depth:.2f}m)")
                         
-                        for i in range(1, len(detected_echo_depths)):
-                            depth_in_sediment = detected_echo_depths[i] - detected_water_depth
-                            if depth_in_sediment > 0:  # Only add if in sediment
-                                interface_depths.append(depth_in_sediment)
-                                if i < len(detected_echo_amplitudes):
-                                    interface_amplitudes.append(detected_echo_amplitudes[i])
-                                else:
-                                    interface_amplitudes.append(0.0)
+                        # Convert full depths to depths in sediment (relative to water-bottom)
+                        # The echo with maximum amplitude (max_amp_idx) is at water-bottom, so depth_in_sediment = 0
+                        # Other echoes are at full_depth - water_depth
+                        interface_depths = [0.0]  # First interface (water-bottom) is at 0 in sediment
+                        interface_amplitudes = [detected_echo_amplitudes[max_amp_idx]] if len(detected_echo_amplitudes) > max_amp_idx else [0.0]
+                        
+                        # Add other echoes (excluding the water-bottom echo)
+                        for i in range(len(detected_echo_depths)):
+                            if i != max_amp_idx:  # Skip the water-bottom echo (already added)
+                                depth_in_sediment = detected_echo_depths[i] - detected_water_depth
+                                if depth_in_sediment > 0:  # Only add if in sediment
+                                    interface_depths.append(depth_in_sediment)
+                                    if i < len(detected_echo_amplitudes):
+                                        interface_amplitudes.append(detected_echo_amplitudes[i])
+                                    else:
+                                        interface_amplitudes.append(0.0)
                         
                         self.logger.info(f"Detected {len(detected_echo_depths)} echoes from correlation: "
                                        f"water-bottom at {detected_water_depth:.2f} m, "
