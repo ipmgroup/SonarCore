@@ -324,12 +324,18 @@ class SBPWindow(QMainWindow):
         
         add_layer_btn = QPushButton("Add Layer")
         remove_layer_btn = QPushButton("Remove Layer")
+        move_up_btn = QPushButton("Move Up")
+        move_down_btn = QPushButton("Move Down")
         add_layer_btn.clicked.connect(self._add_sediment_layer)
         remove_layer_btn.clicked.connect(self._remove_sediment_layer)
+        move_up_btn.clicked.connect(self._move_layer_up)
+        move_down_btn.clicked.connect(self._move_layer_down)
         sediment_btn_layout.addWidget(layer_type_label)
         sediment_btn_layout.addWidget(self.layer_type_combo)
         sediment_btn_layout.addWidget(add_layer_btn)
         sediment_btn_layout.addWidget(remove_layer_btn)
+        sediment_btn_layout.addWidget(move_up_btn)
+        sediment_btn_layout.addWidget(move_down_btn)
         sediment_btn_layout.addStretch()
         sediment_layout.addLayout(sediment_btn_layout)
         
@@ -721,6 +727,85 @@ class SBPWindow(QMainWindow):
             # Save settings after removing layer
             self._save_gui_settings()
     
+    def _move_layer_up(self):
+        """Move selected layer up (decrease index)."""
+        current_row = self.sediment_table.currentRow()
+        if current_row <= 0:
+            return  # Already at top or no selection
+        
+        # Block signals to prevent saving during table update
+        self.sediment_table.blockSignals(True)
+        
+        # Swap data between current row and row above
+        prev_row = current_row - 1
+        for col in range(self.sediment_table.columnCount()):
+            current_item = self.sediment_table.item(current_row, col)
+            prev_item = self.sediment_table.item(prev_row, col)
+            
+            # Get text values
+            current_text = current_item.text() if current_item else ""
+            prev_text = prev_item.text() if prev_item else ""
+            
+            # Swap values
+            if current_item:
+                current_item.setText(prev_text)
+            else:
+                self.sediment_table.setItem(current_row, col, QTableWidgetItem(prev_text))
+            
+            if prev_item:
+                prev_item.setText(current_text)
+            else:
+                self.sediment_table.setItem(prev_row, col, QTableWidgetItem(current_text))
+        
+        # Select the moved row
+        self.sediment_table.selectRow(prev_row)
+        
+        # Unblock signals
+        self.sediment_table.blockSignals(False)
+        
+        # Save settings after moving layer
+        self._save_gui_settings()
+    
+    def _move_layer_down(self):
+        """Move selected layer down (increase index)."""
+        current_row = self.sediment_table.currentRow()
+        max_row = self.sediment_table.rowCount() - 1
+        if current_row < 0 or current_row >= max_row:
+            return  # Already at bottom or no selection
+        
+        # Block signals to prevent saving during table update
+        self.sediment_table.blockSignals(True)
+        
+        # Swap data between current row and row below
+        next_row = current_row + 1
+        for col in range(self.sediment_table.columnCount()):
+            current_item = self.sediment_table.item(current_row, col)
+            next_item = self.sediment_table.item(next_row, col)
+            
+            # Get text values
+            current_text = current_item.text() if current_item else ""
+            next_text = next_item.text() if next_item else ""
+            
+            # Swap values
+            if current_item:
+                current_item.setText(next_text)
+            else:
+                self.sediment_table.setItem(current_row, col, QTableWidgetItem(next_text))
+            
+            if next_item:
+                next_item.setText(current_text)
+            else:
+                self.sediment_table.setItem(next_row, col, QTableWidgetItem(current_text))
+        
+        # Select the moved row
+        self.sediment_table.selectRow(next_row)
+        
+        # Unblock signals
+        self.sediment_table.blockSignals(False)
+        
+        # Save settings after moving layer
+        self._save_gui_settings()
+    
     def _get_sediment_profile(self) -> Optional[SedimentProfileDTO]:
         """Get sediment profile from table."""
         layers = []
@@ -891,34 +976,36 @@ class SBPWindow(QMainWindow):
                     self.profile_plot.plot(depths, raw_signal, pen='c', name="All Reflections (RAW)")
                 
                 # Show correlation signal if checkbox is checked (on secondary Y-axis)
+                correlation_signal_array = None
+                correlation_depths_array = None
                 if show_correlation and output_dto.profile_correlation and output_dto.profile_correlation_depths:
                     # Clear correlation axis before adding new data
                     self.correlation_axis.clear()
                     
-                    correlation_signal = np.array(output_dto.profile_correlation)
-                    correlation_depths = np.array(output_dto.profile_correlation_depths)
+                    correlation_signal_array = np.array(output_dto.profile_correlation)
+                    correlation_depths_array = np.array(output_dto.profile_correlation_depths)
                     
                     # Filter out negative depths (from mode='full' correlation with negative lags)
                     # Use > 0.0 (strict) to exclude zero and negative depths completely
                     # Also handle any numerical precision issues by using a small threshold
-                    mask_positive = correlation_depths > 1e-10  # Strict positive check with small threshold
-                    correlation_signal = correlation_signal[mask_positive]
-                    correlation_depths = correlation_depths[mask_positive]
+                    mask_positive = correlation_depths_array > 1e-10  # Strict positive check with small threshold
+                    correlation_signal_array = correlation_signal_array[mask_positive]
+                    correlation_depths_array = correlation_depths_array[mask_positive]
                     
                     # Additional safety check: ensure no negative depths remain
-                    if np.any(correlation_depths < 0):
+                    if np.any(correlation_depths_array < 0):
                         # If any negative values remain, filter them out again
-                        mask_positive_strict = correlation_depths >= 0
-                        correlation_signal = correlation_signal[mask_positive_strict]
-                        correlation_depths = correlation_depths[mask_positive_strict]
+                        mask_positive_strict = correlation_depths_array >= 0
+                        correlation_signal_array = correlation_signal_array[mask_positive_strict]
+                        correlation_depths_array = correlation_depths_array[mask_positive_strict]
                     
-                    if len(correlation_signal) > 0 and len(correlation_depths) > 0:
+                    if len(correlation_signal_array) > 0 and len(correlation_depths_array) > 0:
                         # Verify no negative depths before plotting
-                        assert np.all(correlation_depths >= 0), f"Negative depths detected: {correlation_depths[correlation_depths < 0]}"
+                        assert np.all(correlation_depths_array >= 0), f"Negative depths detected: {correlation_depths_array[correlation_depths_array < 0]}"
                         
                         # Plot correlation on secondary Y-axis (only positive values)
-                        correlation_positive = np.abs(correlation_signal)
-                        correlation_item = pg.PlotDataItem(correlation_depths, correlation_positive, pen='m', name="Correlation")
+                        correlation_positive = np.abs(correlation_signal_array)
+                        correlation_item = pg.PlotDataItem(correlation_depths_array, correlation_positive, pen='m', name="Correlation")
                         self.correlation_axis.addItem(correlation_item)
                         # Set label for secondary axis
                         self.profile_plot.setLabel('right', 'Correlation', units='V')
@@ -930,8 +1017,63 @@ class SBPWindow(QMainWindow):
                     self.profile_plot.setLabel('right', '')
                 
                 # Mark detected interfaces (full depths from surface)
-                # For RAW mode, use amplitudes from raw_signal at interface positions (if signal is shown)
-                if show_signal and output_dto.interface_depths and output_dto.profile_water_depth is not None and output_dto.profile_raw_signal:
+                # If signal is shown: use amplitudes from raw_signal on profile_plot
+                # If only correlation is shown: use amplitudes from correlation_signal on correlation_axis
+                if output_dto.interface_depths and output_dto.profile_water_depth is not None:
+                    interface_depths_raw = np.array(output_dto.interface_depths)
+                    water_depth = output_dto.profile_water_depth
+                    
+                    # Convert interface depths (in sediment) to full depths (from surface)
+                    interface_full_depths = []
+                    for i, depth_in_sediment in enumerate(interface_depths_raw):
+                        if i == 0:
+                            # First interface (water-bottom) is at water_depth
+                            interface_full_depth = water_depth
+                        else:
+                            # Other interfaces are at water_depth + depth_in_sediment
+                            interface_full_depth = water_depth + depth_in_sediment
+                        interface_full_depths.append(interface_full_depth)
+                    interface_full_depths = np.array(interface_full_depths)
+                    
+                    # Show on profile_plot if signal is shown
+                    if show_signal and output_dto.profile_raw_signal:
+                        raw_signal = np.array(output_dto.profile_raw_signal)
+                        interface_raw_amps = []
+                        
+                        for interface_full_depth in interface_full_depths:
+                            # Find closest depth index in depths array
+                            depth_idx = np.argmin(np.abs(depths - interface_full_depth))
+                            # Get amplitude from raw signal at this position
+                            if depth_idx < len(raw_signal):
+                                interface_raw_amps.append(raw_signal[depth_idx])
+                            else:
+                                interface_raw_amps.append(0.0)
+                        
+                        interface_raw_amps = np.array(interface_raw_amps)
+                        self.profile_plot.plot(interface_full_depths, interface_raw_amps, 
+                                              pen=None, symbol='o', symbolSize=10,
+                                              symbolBrush='r', name="Interfaces")
+                    # Show on correlation_axis if only correlation is shown (and correlation data is available)
+                    elif show_correlation and correlation_signal_array is not None and correlation_depths_array is not None:
+                        correlation_positive = np.abs(correlation_signal_array)
+                        interface_corr_amps = []
+                        
+                        for interface_full_depth in interface_full_depths:
+                            # Find closest depth index in correlation_depths array
+                            depth_idx = np.argmin(np.abs(correlation_depths_array - interface_full_depth))
+                            # Get amplitude from correlation signal at this position
+                            if depth_idx < len(correlation_positive):
+                                interface_corr_amps.append(correlation_positive[depth_idx])
+                            else:
+                                interface_corr_amps.append(0.0)
+                        
+                        interface_corr_amps = np.array(interface_corr_amps)
+                        # Plot on correlation_axis (secondary Y-axis)
+                        interface_item = pg.PlotDataItem(interface_full_depths, interface_corr_amps,
+                                                         pen=None, symbol='o', symbolSize=10,
+                                                         symbolBrush='r', name="Interfaces")
+                        self.correlation_axis.addItem(interface_item)
+                elif output_dto.interface_depths and output_dto.interface_amplitudes:
                     raw_signal = np.array(output_dto.profile_raw_signal)
                     interface_depths_raw = np.array(output_dto.interface_depths)
                     water_depth = output_dto.profile_water_depth
@@ -1013,6 +1155,8 @@ class SBPWindow(QMainWindow):
                 
                 # Show correlation signal if checkbox is checked (filtered for sediment layers only, on secondary Y-axis)
                 # Correlation is independent of show_signal checkbox
+                sediment_correlation_array = None
+                sediment_correlation_depths_array = None
                 if show_correlation and output_dto.profile_correlation and output_dto.profile_correlation_depths:
                     # Clear correlation axis before adding new data
                     self.correlation_axis.clear()
@@ -1048,6 +1192,10 @@ class SBPWindow(QMainWindow):
                         # Verify no negative depths before plotting
                         assert np.all(sediment_correlation_depths >= 0), f"Negative depths detected: {sediment_correlation_depths[sediment_correlation_depths < 0]}"
                         
+                        # Store for interface marking
+                        sediment_correlation_array = sediment_correlation
+                        sediment_correlation_depths_array = sediment_correlation_depths
+                        
                         # Plot correlation on secondary Y-axis (only positive values)
                         # Correlation is cross-correlation (convolution) of CHIRP signal
                         # Take absolute value to show only positive correlation
@@ -1064,14 +1212,13 @@ class SBPWindow(QMainWindow):
                     self.profile_plot.setLabel('right', '')
                 
                 # Mark detected interfaces (same as RAW mode, but only from water_depth)
-                if show_signal and output_dto.interface_depths and output_dto.profile_water_depth is not None and output_dto.profile_raw_signal:
-                    raw_signal = np.array(output_dto.profile_raw_signal)
+                # If signal is shown: use amplitudes from raw_signal on profile_plot
+                # If only correlation is shown: use amplitudes from correlation_signal on correlation_axis
+                if output_dto.interface_depths and output_dto.profile_water_depth is not None:
                     interface_depths_raw = np.array(output_dto.interface_depths)
                     
                     # interface_depths are in sediment (from bottom), convert to full depth from surface
                     interface_full_depths = []
-                    interface_raw_amps = []
-                    
                     for i, depth_in_sediment in enumerate(interface_depths_raw):
                         if i == 0:
                             # First interface (water-bottom) is at water_depth
@@ -1083,22 +1230,48 @@ class SBPWindow(QMainWindow):
                         # Only include interfaces >= water_depth (starting from first echo)
                         if interface_full_depth >= water_depth:
                             interface_full_depths.append(interface_full_depth)
-                            
-                            # Find closest depth index in depths array
-                            depth_idx = np.argmin(np.abs(depths - interface_full_depth))
-                            # Get amplitude from raw signal at this position
-                            if depth_idx < len(raw_signal):
-                                interface_raw_amps.append(raw_signal[depth_idx])
-                            else:
-                                interface_raw_amps.append(0.0)
                     
                     if len(interface_full_depths) > 0:
                         interface_full_depths = np.array(interface_full_depths)
-                        interface_raw_amps = np.array(interface_raw_amps)
                         
-                        self.profile_plot.plot(interface_full_depths, interface_raw_amps, 
-                                              pen=None, symbol='o', symbolSize=10,
-                                              symbolBrush='r', name="Interfaces")
+                        # Show on profile_plot if signal is shown
+                        if show_signal and output_dto.profile_raw_signal:
+                            raw_signal = np.array(output_dto.profile_raw_signal)
+                            interface_raw_amps = []
+                            
+                            for interface_full_depth in interface_full_depths:
+                                # Find closest depth index in depths array
+                                depth_idx = np.argmin(np.abs(depths - interface_full_depth))
+                                # Get amplitude from raw signal at this position
+                                if depth_idx < len(raw_signal):
+                                    interface_raw_amps.append(raw_signal[depth_idx])
+                                else:
+                                    interface_raw_amps.append(0.0)
+                            
+                            interface_raw_amps = np.array(interface_raw_amps)
+                            self.profile_plot.plot(interface_full_depths, interface_raw_amps, 
+                                                  pen=None, symbol='o', symbolSize=10,
+                                                  symbolBrush='r', name="Interfaces")
+                        # Show on correlation_axis if only correlation is shown (and correlation data is available)
+                        elif show_correlation and sediment_correlation_array is not None and sediment_correlation_depths_array is not None:
+                            sediment_correlation_positive = np.abs(sediment_correlation_array)
+                            interface_corr_amps = []
+                            
+                            for interface_full_depth in interface_full_depths:
+                                # Find closest depth index in sediment_correlation_depths array
+                                depth_idx = np.argmin(np.abs(sediment_correlation_depths_array - interface_full_depth))
+                                # Get amplitude from correlation signal at this position
+                                if depth_idx < len(sediment_correlation_positive):
+                                    interface_corr_amps.append(sediment_correlation_positive[depth_idx])
+                                else:
+                                    interface_corr_amps.append(0.0)
+                            
+                            interface_corr_amps = np.array(interface_corr_amps)
+                            # Plot on correlation_axis (secondary Y-axis)
+                            interface_item = pg.PlotDataItem(interface_full_depths, interface_corr_amps,
+                                                             pen=None, symbol='o', symbolSize=10,
+                                                             symbolBrush='r', name="Interfaces")
+                            self.correlation_axis.addItem(interface_item)
             
             # Set X-range based on mode (RAW or Ground)
             # correlation_axis is X-linked to profile_plot, so setting X-range on profile_plot controls both

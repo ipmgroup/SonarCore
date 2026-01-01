@@ -1,0 +1,16 @@
+{
+  "_comment": "Wood (wet, underwater) sediment layer properties",
+  "name": "Wood",
+  "description": "Wood (wet, underwater) - porous, fibrous material",
+  "density": 750,
+  "_comment_density": "Density, kg/m³ (600-900 range, using average 750)",
+  "sound_speed": 2400,
+  "_comment_sound_speed": "Sound speed in layer, m/s (1500-3300 range, anisotropic, using average 2400)",
+  "attenuation": 0.5,
+  "_comment_attenuation": "Attenuation coefficient at 1 kHz, dB/m (0.2-0.8 dB/m/kHz range, using average 0.5)",
+  "default_thickness": 2.0,
+  "_comment_default_thickness": "Default layer thickness, m",
+  "source": "Typical values for wet wood underwater - porous, fibrous, frequency selective",
+  "version": "1.0"
+}
+

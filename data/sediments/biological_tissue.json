@@ -1,0 +1,16 @@
+{
+  "_comment": "Biological tissue (human body) sediment layer properties",
+  "name": "Biological Tissue",
+  "description": "Biological tissue (human body) - viscoelastic material with weak reflection and strong absorption",
+  "density": 1025,
+  "_comment_density": "Density, kg/m³ (~1000-1050 range, using average 1025)",
+  "sound_speed": 1525,
+  "_comment_sound_speed": "Sound speed in layer, m/s (1450-1600 range, using average 1525)",
+  "attenuation": 0.75,
+  "_comment_attenuation": "Attenuation coefficient at 1 kHz, dB/m (0.5-1.0 dB/m/kHz range, using average 0.75)",
+  "default_thickness": 1.5,
+  "_comment_default_thickness": "Default layer thickness, m",
+  "source": "Typical values for biological tissue (human body) - very weak reflection from water, very strong absorption, SBP barely penetrates",
+  "version": "1.0"
+}
+

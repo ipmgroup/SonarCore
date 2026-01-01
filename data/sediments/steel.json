@@ -1,0 +1,16 @@
+{
+  "_comment": "Steel sediment layer properties",
+  "name": "Steel",
+  "description": "Steel - almost ideal reflector, very little penetration",
+  "density": 7850,
+  "_comment_density": "Density, kg/m³ (~7850 typical for steel)",
+  "sound_speed": 5950,
+  "_comment_sound_speed": "Sound speed in layer, m/s (5800-6100 range, using average 5950)",
+  "attenuation": 0.03,
+  "_comment_attenuation": "Attenuation coefficient at 1 kHz, dB/m (0.01-0.05 dB/m/kHz range, using average 0.03)",
+  "default_thickness": 0.5,
+  "_comment_default_thickness": "Default layer thickness, m (steel is typically a thin layer/surface)",
+  "source": "Typical values for steel - almost ideal reflector, SBP sees only surface",
+  "version": "1.0"
+}
+

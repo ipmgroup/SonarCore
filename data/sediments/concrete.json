@@ -1,0 +1,16 @@
+{
+  "_comment": "Concrete (underwater) sediment layer properties",
+  "name": "Concrete",
+  "description": "Concrete underwater - rigid, strongly scattering material",
+  "density": 2300,
+  "_comment_density": "Density, kg/m³ (2200-2400 range, using average 2300)",
+  "sound_speed": 3500,
+  "_comment_sound_speed": "Sound speed in layer, m/s (3000-4000 range, using average 3500)",
+  "attenuation": 1.0,
+  "_comment_attenuation": "Attenuation coefficient at 1 kHz, dB/m (0.5-1.5 dB/m/kHz range, using average 1.0)",
+  "default_thickness": 1.0,
+  "_comment_default_thickness": "Default layer thickness, m",
+  "source": "Typical values for underwater concrete - rigid, strongly scattering",
+  "version": "1.0"
+}
+

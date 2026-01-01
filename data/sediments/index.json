@@ -1,12 +1,16 @@
 {
-  "total_types": 6,
+  "total_types": 10,
   "types": [
     "clay",
     "silt",
     "sand",
     "soft_clay",
     "gravel",
-    "mud"
+    "mud",
+    "concrete",
+    "steel",
+    "wood",
+    "biological_tissue"
   ]
 }
 
