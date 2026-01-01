@@ -35,6 +35,51 @@ For detailed installation instructions, see [INSTALL.md](INSTALL.md).
 - **Side-Scan Sonar**: Seafloor imaging and backscattering analysis
 - **USBL**: Underwater positioning systems
 
+## 🔍 Sub-Bottom Profiler (SBP)
+
+The SBP simulator enables detailed modeling of sub-bottom sediment layers and acoustic penetration analysis.
+
+### Key Capabilities
+
+- **Multi-Layer Sediment Modeling**: Configure complex sediment profiles with up to 10 different layer types
+  - Natural sediments: Clay, Silt, Sand, Mud, Gravel, Soft Clay
+  - Artificial materials: Concrete, Steel, Wood (underwater)
+  - Biological materials: Biological tissue
+- **CHIRP Signal Processing**: Linear CHIRP generation with configurable frequency range (3-12 kHz typical)
+- **Matched Filtering**: Cross-correlation for echo detection and interface identification
+- **Visualization Modes**:
+  - **RAW Mode**: Full signal from surface including water column
+  - **Ground Mode**: Sediment layers only (from first echo to end)
+- **Interface Detection**: Automatic identification of layer boundaries with red markers
+- **Signal Path Analysis**: Complete signal propagation path with transmission parameters
+- **Layer Management**: Interactive GUI with layer reordering (Move Up/Down)
+
+### Running SBP Simulator
+
+```bash
+# Run SBP GUI
+python main_sbp.py
+```
+
+### Sediment Layer Properties
+
+Each layer is characterized by:
+- **Density** (ρ): kg/m³
+- **Sound Speed** (c): m/s
+- **Attenuation** (α): dB/m at 1 kHz (frequency-dependent)
+- **Thickness**: Layer depth, m
+- **Acoustic Impedance**: Z = ρ × c (calculated automatically)
+
+### Output
+
+The simulator provides:
+- **Profile Visualization**: A-scan with raw signal and correlation
+- **Detected Interfaces**: Marked with red dots showing layer boundaries
+- **Signal Path Diagram**: Complete transmission chain analysis
+- **Results Summary**: Detected interfaces, depths, amplitudes, and transmission parameters
+
+For detailed technical specifications, see [SBP.md](SBP.md).
+
 ## 🏗️ Architecture
 
 SonarCore consists of three main modules:
