@@ -93,6 +93,7 @@ SonarCore consists of three main modules:
 Complete technical specifications and documentation:
 
 - **[Sonar.md](Sonar.md)** - Complete technical documentation for the SonarCore platform (in Russian)
+- **[OSO.md](OSO.md)** - Output Stage Optimization (OSO) technical specification for underwater acoustic communication systems with CHIRP modulation. Includes multi-parameter optimization of Class D amplifier, transformer, matching inductance, and transducer parameters
 - **[SBP.md](SBP.md)** - Sub-Bottom Profiler (SBP) technical specification with ground profile and penetration depth modeling
 - **[side_scan.md](side_scan.md)** - Side-Scan Sonar technical specification (60-900 kHz) with digital IQ processing
 - **[USBL.md](USBL.md)** - Ultra-Short Baseline positioning system technical specification
