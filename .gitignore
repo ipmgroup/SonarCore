@@ -41,3 +41,5 @@ tests/test_correlation_plots/
 tests/**/*.png
 tests/**/*.jpg
 tests/**/*.pdf
+
+*.pdf
