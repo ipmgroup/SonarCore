@@ -5,16 +5,41 @@ Uses PyQt6, pyqtgraph for interactive data extraction
 
 import sys
 import numpy as np
+import logging
+from datetime import datetime
+from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                               QHBoxLayout, QPushButton, QLabel, QFileDialog,
                               QLineEdit, QTableWidget, QTableWidgetItem, 
-                              QTabWidget, QGroupBox, QMessageBox, QSplitter)
+                              QTabWidget, QGroupBox, QMessageBox, QSplitter,
+                              QComboBox, QSpinBox, QDoubleSpinBox)
 from PyQt6.QtCore import Qt, QPointF
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 import pyqtgraph as pg
 from scipy.interpolate import UnivariateSpline, interp1d
+from numpy.polynomial import Polynomial
 import csv
 import json
+from bvd_model import calculate_bvd_parameters, bvd_admittance, calculate_model_curves
+from transducer_models import (
+    calculate_mbvd_parameters, mbvd_admittance, calculate_model_curves_mbvd
+)
+
+# Setup logging
+log_dir = Path("logs")
+log_dir.mkdir(exist_ok=True)
+log_file = log_dir / f"bvd_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file, encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 try:
     import fitz  # PyMuPDF
@@ -265,6 +290,8 @@ class GraphExtractorApp(QMainWindow):
         
         # Storage for additional axes for multiple functions
         self.extra_axes = []
+        # Storage for additional ViewBoxes for real Y range mode
+        self.extra_viewboxes = []
         
         self.initUI()
         
@@ -309,11 +336,11 @@ class GraphExtractorApp(QMainWindow):
         
         # Instructions
         info = QLabel("""
-        <b style='font-size: 18px;'>📁 STEP 1: Load Image</b><br><br>
+        <b style='font-size: 18px;'>📁 STEP 1: Load Data</b><br><br>
         <b>Workflow:</b><br>
-        1️⃣ Load graph image or PDF<br>
-        2️⃣ Calibrate coordinate axes (3 points)<br>
-        3️⃣ Extract data from graph<br>
+        1️⃣ Load graph image/PDF <b>OR</b> import data from CSV/JSON files<br>
+        2️⃣ Calibrate coordinate axes (3 points) - only for images<br>
+        3️⃣ Extract data from graph - only for images<br>
         4️⃣ View results and export<br>
         5️⃣ (Optional) Calculate BVD parameters
         """)
@@ -323,17 +350,34 @@ class GraphExtractorApp(QMainWindow):
         # Load buttons
         btn_layout = QVBoxLayout()
         
-        # Buttons
-        buttons = QHBoxLayout()
-        btn_image = QPushButton("Load Image")
+        # Image/PDF loading section
+        image_group = QGroupBox("Load from Image/PDF")
+        image_layout = QHBoxLayout()
+        btn_image = QPushButton("📷 Load Image")
         btn_image.clicked.connect(self.loadImage)
-        buttons.addWidget(btn_image)
+        image_layout.addWidget(btn_image)
         
         if PDF_AVAILABLE:
-            btn_pdf = QPushButton("Load PDF")
+            btn_pdf = QPushButton("📄 Load PDF")
             btn_pdf.clicked.connect(lambda: self.loadPDFFromButton())
-            buttons.addWidget(btn_pdf)
-        btn_layout.addLayout(buttons)
+            image_layout.addWidget(btn_pdf)
+        image_layout.addStretch()
+        image_group.setLayout(image_layout)
+        btn_layout.addWidget(image_group)
+        
+        # Data file loading section
+        data_group = QGroupBox("Load from Data Files")
+        data_layout = QHBoxLayout()
+        btn_csv = QPushButton("📥 Load CSV")
+        btn_csv.clicked.connect(self.loadDataFromCSV)
+        data_layout.addWidget(btn_csv)
+        
+        btn_json = QPushButton("📥 Load JSON")
+        btn_json.clicked.connect(self.loadDataFromJSON)
+        data_layout.addWidget(btn_json)
+        data_layout.addStretch()
+        data_group.setLayout(data_layout)
+        btn_layout.addWidget(data_group)
         
         # PDF zoom settings
         if PDF_AVAILABLE:
@@ -371,15 +415,70 @@ class GraphExtractorApp(QMainWindow):
         info.setStyleSheet("padding: 15px; background: #e8f5e9; border-radius: 8px;")
         layout.addWidget(info)
         
+        # Note: Function assignment is done in TAB 4 (Results tab)
+        info_bvd = QLabel("""
+        <b>📋 Workflow:</b><br>
+        1️⃣ Assign Conductance and Susceptance functions in TAB 4 (Results tab)<br>
+        2️⃣ Select model type below and enter transducer parameters<br>
+        3️⃣ Click "Calculate Model" button below to create model from your experimental data
+        """)
+        info_bvd.setStyleSheet("padding: 10px; background: #e3f2fd; border-radius: 5px;")
+        layout.addWidget(info_bvd)
+        
+        # Model selection
+        model_group = QGroupBox("🔬 Model Selection")
+        model_layout = QVBoxLayout()
+        
+        info_model = QLabel("""
+        <b>Select model type:</b> The model will be created from your extracted Conductance and Susceptance data.
+        """)
+        info_model.setStyleSheet("padding: 5px; font-size: 11px;")
+        model_layout.addWidget(info_model)
+        
+        combo_layout = QHBoxLayout()
+        combo_layout.addWidget(QLabel("Transducer Model:"))
+        self.model_type_combo = QComboBox()
+        self.model_type_combo.addItems(["BVD (Basic)", "MBVD (Modified BVD - Recommended)"])
+        self.model_type_combo.setCurrentIndex(1)  # Default to MBVD
+        self.model_type_combo.setToolTip(
+            "BVD: Basic 4-parameter model (C0, R1, L1, C1)\n"
+            "MBVD: Modified BVD with dielectric losses (R0) - usually more accurate\n\n"
+            "The model will be fitted to your experimental data using optimization."
+        )
+        combo_layout.addWidget(self.model_type_combo)
+        combo_layout.addStretch()
+        model_layout.addLayout(combo_layout)
+        
+        model_group.setLayout(model_layout)
+        layout.addWidget(model_group)
+        
+        # Transducer parameters
+        params_group = QGroupBox("Transducer Parameters")
+        params_layout = QHBoxLayout()
+        
+        params_layout.addWidget(QLabel("Static capacitance C₀ (nF):"))
+        self.input_c0 = QLineEdit("12")
+        self.input_c0.setMaximumWidth(150)
+        params_layout.addWidget(self.input_c0)
+        
+        params_layout.addWidget(QLabel("Resonant frequency fs (kHz):"))
+        self.input_fs = QLineEdit("25")
+        self.input_fs.setMaximumWidth(150)
+        params_layout.addWidget(self.input_fs)
+        
+        params_layout.addStretch()
+        params_group.setLayout(params_layout)
+        layout.addWidget(params_group)
+        
         # Calculated parameters group
-        params_group = QGroupBox("Calculated BVD Parameters")
+        self.params_group = QGroupBox("Calculated Model Parameters")
         params_layout = QVBoxLayout()
         
         # Parameters table
         self.bvd_params_table = QTableWidget()
         self.bvd_params_table.setColumnCount(3)
         self.bvd_params_table.setHorizontalHeaderLabels(['Parameter', 'Value', 'Unit'])
-        self.bvd_params_table.setRowCount(8)
+        self.bvd_params_table.setRowCount(9)  # Can accommodate MBVD (9 params) or BVD (8 params)
         
         params = [
             ('C₀ (static capacitance)', '', 'nF'),
@@ -400,8 +499,8 @@ class GraphExtractorApp(QMainWindow):
         self.bvd_params_table.resizeColumnsToContents()
         params_layout.addWidget(self.bvd_params_table)
         
-        params_group.setLayout(params_layout)
-        layout.addWidget(params_group)
+        self.params_group.setLayout(params_layout)
+        layout.addWidget(self.params_group)
         
         # Comparison plots - 4 plots in 2x2 grid
         compare_group = QGroupBox("Comparison: Experimental (PDF) vs BVD Model")
@@ -457,6 +556,31 @@ class GraphExtractorApp(QMainWindow):
         self.fit_quality_label.setStyleSheet("padding: 10px; font-size: 14px;")
         layout.addWidget(self.fit_quality_label)
         
+        # Main button to create model (in TAB 5)
+        btn_create_model = QPushButton("🔬 Create Model")
+        btn_create_model.setStyleSheet("""
+            QPushButton {
+                font-size: 16px;
+                font-weight: bold;
+                padding: 15px 30px;
+                background-color: #4CAF50;
+                color: white;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        btn_create_model.setToolTip(
+            "Create transducer model from your experimental data.\n"
+            "Make sure:\n"
+            "1. Conductance and Susceptance are assigned in TAB 4\n"
+            "2. Model type is selected above\n"
+            "3. Transducer parameters (C₀, fs) are entered"
+        )
+        btn_create_model.clicked.connect(self.calculateBVD)
+        layout.addWidget(btn_create_model)
+        
         # Buttons
         btn_layout = QHBoxLayout()
         
@@ -469,24 +593,37 @@ class GraphExtractorApp(QMainWindow):
         
         return widget
     
+    def updateBVDFunctionLists(self):
+        """Update function selection combo boxes in BVD tab (deprecated - use TAB 4 instead)"""
+        # This method is kept for backward compatibility but function assignment
+        # should be done in TAB 4 (Results tab)
+        pass
+    
     def calculateBVD(self):
         """Calculate BVD parameters from Admittance data"""
         try:
-            # Check for Conductance and Susceptance functions
+            # Get assigned functions from TAB 4 (bvd_type field)
             conductance_func = None
             susceptance_func = None
             
             for func in self.all_functions:
-                name_lower = func['name'].lower()
-                if 'conductance' in name_lower:
+                if func.get('bvd_type') == 'conductance':
                     conductance_func = func
-                elif 'susceptance' in name_lower:
+                elif func.get('bvd_type') == 'susceptance':
                     susceptance_func = func
             
             if not conductance_func or not susceptance_func:
                 QMessageBox.warning(
                     self, "Error", 
-                    "Both functions must be extracted: Conductance and Susceptance"
+                    "Please assign Conductance and Susceptance functions in TAB 4 (Results tab).\n"
+                    "Use the 'BVD Model Assignment' section to select which function is Conductance and which is Susceptance."
+                )
+                return
+            
+            if conductance_func == susceptance_func:
+                QMessageBox.warning(
+                    self, "Error", 
+                    "Conductance and Susceptance must be different functions"
                 )
                 return
             
@@ -498,149 +635,174 @@ class GraphExtractorApp(QMainWindow):
             C0 = C0_nF * 1e-9  # nF -> F
             fs = fs_kHz * 1e3  # kHz -> Hz
             
-            # Conductance data
-            g_data = conductance_func['data']
+            # Use fitted function data (not original points)
+            # Conductance data from fitted function
+            g_data = conductance_func['data']  # This is the fitted data (spline/polynomial)
+            # Data is stored as [freq_kHz, value_mS], so we need to convert
             freq_g = np.array([p[0] * 1e3 for p in g_data])  # kHz -> Hz
-            g_values = np.array([p[1] * 1e-3 for p in g_data])  # mS -> S
+            g_values = np.array([p[1] for p in g_data])  # Keep in mS for now
             
-            # Susceptance data
-            b_data = susceptance_func['data']
+            # Susceptance data from fitted function
+            b_data = susceptance_func['data']  # This is the fitted data (spline/polynomial)
             freq_b = np.array([p[0] * 1e3 for p in b_data])  # kHz -> Hz
-            b_values = np.array([p[1] * 1e-3 for p in b_data])  # mS -> S
+            b_values = np.array([p[1] for p in b_data])  # Keep in mS for now
             
-            # Find resonant frequency from Conductance maximum
-            g_max_idx = np.argmax(g_values)
-            fs_measured = freq_g[g_max_idx]
-            g_max = g_values[g_max_idx]
+            # Convert to S for calculations
+            g_values_S = g_values * 1e-3  # mS -> S
+            b_values_S = b_values * 1e-3  # mS -> S
             
-            # Find antiresonant frequency
-            # fp is the frequency of |Y| minimum after resonance
-            # Approximately: where Susceptance crosses zero after resonance
-            zero_crossings = np.where(np.diff(np.sign(b_values)))[0]
-            fp_measured = fs_measured
+            # Get selected model type
+            model_type = self.model_type_combo.currentText()
+            use_mbvd = "MBVD" in model_type
             
-            for idx in zero_crossings:
-                if freq_b[idx] > fs_measured:
-                    fp_measured = freq_b[idx]
-                    break
+            # Calculate parameters using selected model
+            if use_mbvd:
+                logger.info("Starting MBVD (Modified BVD) parameter calculation...")
+                logger.info(f"Input parameters: C0={C0_nF} nF, fs={fs_kHz} kHz (initial)")
+                logger.info(f"Conductance data: {len(g_values)} points, range: {g_values.min():.4f} - {g_values.max():.4f} mS")
+                logger.info(f"Susceptance data: {len(b_values)} points, range: {b_values.min():.4f} - {b_values.max():.4f} mS")
+                
+                self.bvd_params = calculate_mbvd_parameters(
+                    freq_g, g_values_S, freq_b, b_values_S, C0
+                )
+                
+                # Ensure model_type is set
+                self.bvd_params['model_type'] = 'MBVD'
+                
+                logger.info("MBVD parameter calculation completed successfully")
+                logger.info(f"Calculated MBVD parameters: R0={self.bvd_params['R0']:.2f} Ohm, R1={self.bvd_params['R1']:.2f} Ohm")
+                
+                # Update group title
+                self.params_group.setTitle("Calculated MBVD Parameters")
+                
+                # Update table for MBVD (has R0)
+                param_data = [
+                    ('C₀', f"{self.bvd_params['C0']*1e9:.2f}", 'nF'),
+                    ('R₀', f"{self.bvd_params['R0']:.2f}", 'Ohm'),
+                    ('fs', f"{self.bvd_params['fs']*1e-3:.4f}", 'kHz'),
+                    ('fp', f"{self.bvd_params['fp']*1e-3:.4f}", 'kHz'),
+                    ('R₁', f"{self.bvd_params['R1']:.2f}", 'Ohm'),
+                    ('L₁', f"{self.bvd_params['L1']*1e3:.4f}", 'mH'),
+                    ('C₁', f"{self.bvd_params['C1']*1e9:.4f}", 'nF'),
+                    ('Qm', f"{self.bvd_params['Qm']:.2f}", ''),
+                    ('k', f"{self.bvd_params['k']:.4f}", ''),
+                    ('tan δ', f"{self.bvd_params.get('tan_delta', 0.0):.6f}", '')
+                ]
+                self.bvd_params_table.setRowCount(len(param_data))
+                for i, (name, val, unit) in enumerate(param_data):
+                    self.bvd_params_table.setItem(i, 0, QTableWidgetItem(name))
+                    self.bvd_params_table.setItem(i, 1, QTableWidgetItem(val))
+                    self.bvd_params_table.setItem(i, 2, QTableWidgetItem(unit))
+            else:
+                logger.info("Starting BVD parameter calculation...")
+                logger.info(f"Input parameters: C0={C0_nF} nF, fs={fs_kHz} kHz (initial)")
+                logger.info(f"Conductance data: {len(g_values)} points, range: {g_values.min():.4f} - {g_values.max():.4f} mS")
+                logger.info(f"Susceptance data: {len(b_values)} points, range: {b_values.min():.4f} - {b_values.max():.4f} mS")
+                
+                self.bvd_params = calculate_bvd_parameters(
+                    freq_g, g_values_S, freq_b, b_values_S, C0
+                )
+                self.bvd_params['model_type'] = 'BVD'
+                
+                logger.info("BVD parameter calculation completed successfully")
+                
+                # Update group title
+                self.params_group.setTitle("Calculated BVD Parameters")
+                
+                # Update table for BVD
+                param_data = [
+                    ('C₀', f"{self.bvd_params['C0']*1e9:.2f}", 'nF'),
+                    ('fs', f"{self.bvd_params['fs']*1e-3:.4f}", 'kHz'),
+                    ('fp', f"{self.bvd_params['fp']*1e-3:.4f}", 'kHz'),
+                    ('R₁', f"{self.bvd_params['R1']:.2f}", 'Ohm'),
+                    ('L₁', f"{self.bvd_params['L1']*1e3:.4f}", 'mH'),
+                    ('C₁', f"{self.bvd_params['C1']*1e9:.4f}", 'nF'),
+                    ('Qm', f"{self.bvd_params['Qm']:.2f}", ''),
+                    ('k', f"{self.bvd_params['k']:.4f}", '')
+                ]
+                self.bvd_params_table.setRowCount(len(param_data))
+                for i, (name, val, unit) in enumerate(param_data):
+                    self.bvd_params_table.setItem(i, 0, QTableWidgetItem(name))
+                    self.bvd_params_table.setItem(i, 1, QTableWidgetItem(val))
+                    self.bvd_params_table.setItem(i, 2, QTableWidgetItem(unit))
             
-            # If not found, use approximate formula
-            if fp_measured == fs_measured:
-                # Typical ratio fp/fs ≈ 1.05-1.15 for piezoceramics
-                fp_measured = fs_measured * 1.1
+            # Log model creation
+            model_name = "MBVD" if use_mbvd else "BVD"
+            logger.info(f"=== {model_name} Model Created Successfully ===")
+            logger.info(f"Model type: {self.bvd_params.get('model_type', 'BVD')}")
+            if use_mbvd:
+                logger.info(f"MBVD model: R0={self.bvd_params.get('R0', 0):.2f} Ohm, R1={self.bvd_params.get('R1', 0):.2f} Ohm")
             
-            # Calculate BVD parameters
-            # R1 from Conductance maximum
-            R1 = 1.0 / g_max
-            
-            # C1 from frequency ratio
-            freq_ratio = (fp_measured / fs_measured) ** 2
-            C1 = C0 / (freq_ratio - 1)
-            
-            # L1 from resonant frequency
-            L1 = 1.0 / (4 * np.pi**2 * fs_measured**2 * C1)
-            
-            # Mechanical Q-factor
-            omega_s = 2 * np.pi * fs_measured
-            Qm = omega_s * L1 / R1
-            
-            # Electromechanical coupling coefficient
-            k = np.sqrt(1 - (fs_measured / fp_measured)**2)
-            
-            # Save parameters
-            self.bvd_params = {
-                'C0': C0,
-                'fs': fs_measured,
-                'fp': fp_measured,
-                'R1': R1,
-                'L1': L1,
-                'C1': C1,
-                'Qm': Qm,
-                'k': k
-            }
-            
-            # Update table
-            values = [
-                f"{C0*1e9:.2f}",
-                f"{fs_measured*1e-3:.4f}",
-                f"{fp_measured*1e-3:.4f}",
-                f"{R1:.2f}",
-                f"{L1*1e3:.4f}",
-                f"{C1*1e9:.4f}",
-                f"{Qm:.2f}",
-                f"{k:.4f}"
-            ]
-            
-            for i, val in enumerate(values):
-                self.bvd_params_table.setItem(i, 1, QTableWidgetItem(val))
-            
-            # Build model curves
+            # Build model curves (pass values in mS for plotting)
             self.plotBVDComparison(freq_g, g_values, freq_b, b_values)
             
             # Enable BVD tab
             self.tabs.setTabEnabled(4, True)
             self.tabs.setCurrentIndex(4)
             
+            # Show success message
+            QMessageBox.information(
+                self, f"{model_name} Model Created", 
+                f"{model_name} model has been successfully created from your data!\n\n"
+                f"Parameters are displayed in the table above.\n"
+                f"Check the graphs below to see the model fit quality.\n\n"
+                f"Model type: {self.bvd_params.get('model_type', 'BVD')}"
+            )
+            
         except ValueError as e:
             QMessageBox.critical(self, "Error", f"Parameter error: {e}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"BVD calculation error: {e}")
     
-    def bvd_admittance(self, freq, C0, R1, L1, C1):
-        """Calculate Admittance from BVD model"""
-        omega = 2 * np.pi * freq
-        
-        # Series branch impedance
-        Z_series = R1 + 1j * (omega * L1 - 1 / (omega * C1))
-        
-        # Series branch admittance
-        Y_series = 1 / Z_series
-        
-        # C0 admittance
-        Y_C0 = 1j * omega * C0
-        
-        # Total admittance
-        Y_total = Y_series + Y_C0
-        
-        return Y_total
-    
     def plotBVDComparison(self, freq_g, g_exp, freq_b, b_exp):
-        """Plot comparison of experimental and model data"""
+        """Plot comparison of experimental and model data
+        Args:
+            freq_g: frequency array for conductance (Hz)
+            g_exp: conductance values (mS)
+            freq_b: frequency array for susceptance (Hz)
+            b_exp: susceptance values (mS)
+        """
         
         # Generate frequency grid
         freq_model = np.linspace(min(freq_g.min(), freq_b.min()), 
                                  max(freq_g.max(), freq_b.max()), 500)
         
-        # Calculate model admittance
-        Y_model = self.bvd_admittance(
-            freq_model,
-            self.bvd_params['C0'],
-            self.bvd_params['R1'],
-            self.bvd_params['L1'],
-            self.bvd_params['C1']
-        )
+        # Calculate model curves using the selected model
+        model_type = self.bvd_params.get('model_type', 'BVD')
+        logger.info(f"Plotting model curves using {model_type} model")
         
-        g_model = np.real(Y_model) * 1e3  # S -> mS
-        b_model = np.imag(Y_model) * 1e3  # S -> mS
+        if model_type == 'MBVD' and 'R0' in self.bvd_params:
+            logger.info(f"Using MBVD model with R0={self.bvd_params['R0']:.2f} Ohm, R1={self.bvd_params['R1']:.2f} Ohm")
+            model_curves = calculate_model_curves_mbvd(freq_model, self.bvd_params)
+        else:
+            logger.info(f"Using BVD model with R1={self.bvd_params['R1']:.2f} Ohm")
+            model_curves = calculate_model_curves(freq_model, self.bvd_params)
         
-        # Magnitude and phase
-        y_mag_model = np.abs(Y_model) * 1e3  # mS
-        y_phase_model = np.angle(Y_model, deg=True)  # degrees
+        g_model = model_curves['g']
+        b_model = model_curves['b']
+        y_mag_model = model_curves['magnitude']
+        y_phase_model = model_curves['phase']
+        freq_model_kHz = model_curves['freq']
         
         # Experimental magnitude and phase
-        Y_exp_g = g_exp + 1j * np.interp(freq_g, freq_b, b_exp)
-        y_mag_exp = np.abs(Y_exp_g) * 1e3
-        y_phase_exp = np.angle(Y_exp_g, deg=True)
+        # Interpolate susceptance to conductance frequencies
+        # Convert to S for calculations, then back to mS
+        g_exp_S = g_exp * 1e-3  # mS -> S
+        b_exp_S = b_exp * 1e-3  # mS -> S
+        b_exp_interp = np.interp(freq_g, freq_b, b_exp_S)  # Interpolate in S
+        Y_exp_g = g_exp_S + 1j * b_exp_interp
+        y_mag_exp = np.abs(Y_exp_g) * 1e3  # S -> mS
+        y_phase_exp = np.angle(Y_exp_g, deg=True)  # degrees
         
         # === Plot 1: Conductance ===
         self.bvd_plot_g.clear()
         self.bvd_plot_g.plot(
-            freq_g * 1e-3, g_exp * 1e3, 
+            freq_g * 1e-3, g_exp,  # g_exp already in mS
             pen=None, symbol='o', symbolBrush=(0, 100, 255, 150), symbolSize=6,
-            name='PDF data'
+            name='PDF data (fitted)'
         )
         self.bvd_plot_g.plot(
-            freq_model * 1e-3, g_model,
+            freq_model_kHz, g_model,
             pen=pg.mkPen((255, 0, 0), width=2),
             name='BVD model'
         )
@@ -652,12 +814,12 @@ class GraphExtractorApp(QMainWindow):
         # === Plot 2: Susceptance ===
         self.bvd_plot_b.clear()
         self.bvd_plot_b.plot(
-            freq_b * 1e-3, b_exp * 1e3,
+            freq_b * 1e-3, b_exp,  # b_exp already in mS
             pen=None, symbol='o', symbolBrush=(0, 100, 255, 150), symbolSize=6,
-            name='PDF data'
+            name='PDF data (fitted)'
         )
         self.bvd_plot_b.plot(
-            freq_model * 1e-3, b_model,
+            freq_model_kHz, b_model,
             pen=pg.mkPen((255, 0, 0), width=2),
             name='BVD model'
         )
@@ -676,7 +838,7 @@ class GraphExtractorApp(QMainWindow):
             name='PDF data (G²+B²)^0.5'
         )
         self.bvd_plot_mag.plot(
-            freq_model * 1e-3, y_mag_model,
+            freq_model_kHz, y_mag_model,
             pen=pg.mkPen((255, 0, 0), width=2),
             name='BVD model'
         )
@@ -702,7 +864,7 @@ class GraphExtractorApp(QMainWindow):
             name='PDF data'
         )
         self.bvd_plot_phase.plot(
-            freq_model * 1e-3, y_phase_model,
+            freq_model_kHz, y_phase_model,
             pen=pg.mkPen((255, 0, 0), width=2),
             name='BVD model'
         )
@@ -726,26 +888,54 @@ class GraphExtractorApp(QMainWindow):
         g_model_at_exp = g_model_interp(freq_g)
         b_model_at_exp = b_model_interp(freq_b)
         
-        # RMSE
-        rmse_g = np.sqrt(np.mean((g_exp * 1e3 - g_model_at_exp)**2))
-        rmse_b = np.sqrt(np.mean((b_exp * 1e3 - b_model_at_exp)**2))
+        # RMSE (both g_exp and g_model_at_exp are already in mS)
+        rmse_g = np.sqrt(np.mean((g_exp - g_model_at_exp)**2))
+        rmse_b = np.sqrt(np.mean((b_exp - b_model_at_exp)**2))
         
         # R² (coefficient of determination)
-        ss_res_g = np.sum((g_exp * 1e3 - g_model_at_exp)**2)
-        ss_tot_g = np.sum((g_exp * 1e3 - np.mean(g_exp * 1e3))**2)
+        ss_res_g = np.sum((g_exp - g_model_at_exp)**2)
+        ss_tot_g = np.sum((g_exp - np.mean(g_exp))**2)
         r2_g = 1 - (ss_res_g / ss_tot_g) if ss_tot_g > 0 else 0
         
-        ss_res_b = np.sum((b_exp * 1e3 - b_model_at_exp)**2)
-        ss_tot_b = np.sum((b_exp * 1e3 - np.mean(b_exp * 1e3))**2)
+        ss_res_b = np.sum((b_exp - b_model_at_exp)**2)
+        ss_tot_b = np.sum((b_exp - np.mean(b_exp))**2)
         r2_b = 1 - (ss_res_b / ss_tot_b) if ss_tot_b > 0 else 0
         
         # Maximum deviations
-        max_error_g = np.max(np.abs(g_exp * 1e3 - g_model_at_exp))
-        max_error_b = np.max(np.abs(b_exp * 1e3 - b_model_at_exp))
+        max_error_g = np.max(np.abs(g_exp - g_model_at_exp))
+        max_error_b = np.max(np.abs(b_exp - b_model_at_exp))
         
         # Mean relative errors
-        mean_rel_error_g = np.mean(np.abs((g_exp * 1e3 - g_model_at_exp) / (g_exp * 1e3 + 1e-10))) * 100
-        mean_rel_error_b = np.mean(np.abs((b_exp * 1e3 - b_model_at_exp) / (np.abs(b_exp * 1e3) + 1e-10))) * 100
+        mean_rel_error_g = np.mean(np.abs((g_exp - g_model_at_exp) / (np.abs(g_exp) + 1e-10))) * 100
+        mean_rel_error_b = np.mean(np.abs((b_exp - b_model_at_exp) / (np.abs(b_exp) + 1e-10))) * 100
+        
+        # Log metrics to file and console
+        logger.info("=" * 60)
+        logger.info("BVD Model Fit Quality Metrics")
+        logger.info("=" * 60)
+        logger.info(f"Conductance (G) Metrics:")
+        logger.info(f"  RMSE: {rmse_g:.6f} mS")
+        logger.info(f"  R²: {r2_g:.6f}")
+        logger.info(f"  Max Error: {max_error_g:.6f} mS")
+        logger.info(f"  Mean Relative Error: {mean_rel_error_g:.2f}%")
+        logger.info(f"Susceptance (B) Metrics:")
+        logger.info(f"  RMSE: {rmse_b:.6f} mS")
+        logger.info(f"  R²: {r2_b:.6f}")
+        logger.info(f"  Max Error: {max_error_b:.6f} mS")
+        logger.info(f"  Mean Relative Error: {mean_rel_error_b:.2f}%")
+        avg_r2 = (r2_g + r2_b) / 2
+        logger.info(f"Average R²: {avg_r2:.6f}")
+        logger.info(f"BVD Parameters:")
+        logger.info(f"  C0: {self.bvd_params['C0']*1e9:.4f} nF")
+        logger.info(f"  fs: {self.bvd_params['fs']*1e-3:.4f} kHz")
+        logger.info(f"  fp: {self.bvd_params['fp']*1e-3:.4f} kHz")
+        logger.info(f"  R1: {self.bvd_params['R1']:.4f} Ohm")
+        logger.info(f"  L1: {self.bvd_params['L1']*1e3:.4f} mH")
+        logger.info(f"  C1: {self.bvd_params['C1']*1e9:.4f} nF")
+        logger.info(f"  Qm: {self.bvd_params['Qm']:.4f}")
+        logger.info(f"  k: {self.bvd_params['k']:.6f}")
+        logger.info(f"  Δf: {(self.bvd_params['fp']*1e-3 - self.bvd_params['fs']*1e-3):.4f} kHz")
+        logger.info("=" * 60)
         
         # Display detailed metrics
         quality_text = f"""
@@ -836,6 +1026,93 @@ class GraphExtractorApp(QMainWindow):
                 QMessageBox.information(self, "Success", "BVD parameters exported")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save: {e}")
+    
+    def exportForSimulator(self):
+        """Export BVD/MBVD parameters in SonarCore simulator format"""
+        if not hasattr(self, 'bvd_params') or not self.bvd_params:
+            QMessageBox.warning(
+                self, "Error", 
+                "Please calculate model parameters first.\n"
+                "Go to TAB 5 and click 'Calculate Model'."
+            )
+            return
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Export Transducer for Simulator", "", 
+            "JSON Files (*.json);;All Files (*.*)"
+        )
+        
+        if not filename:
+            return
+        
+        try:
+            # Get model type
+            model_type = self.bvd_params.get('model_type', 'BVD')
+            
+            # Get basic parameters
+            fs_kHz = self.bvd_params['fs'] * 1e-3
+            fp_kHz = self.bvd_params['fp'] * 1e-3
+            
+            # Estimate frequency range
+            f_min = fs_kHz * 0.8  # 80% of fs
+            f_max = fp_kHz * 1.2  # 120% of fp
+            f_0 = fs_kHz  # Center frequency
+            
+            # Create simulator-compatible JSON
+            transducer_data = {
+                "model": f"Extracted {model_type} Model",
+                "f_min": f_min * 1000,  # Convert to Hz
+                "f_max": f_max * 1000,
+                "f_0": f_0 * 1000,
+                "B_tr": (f_max - f_min) * 1000,
+                "S_TX": 180,  # Default, should be measured
+                "S_RX": -180,  # Default, should be measured
+                "Theta_BW": 10,  # Default beam width
+                "Q": self.bvd_params.get('Qm', 10.0),
+                "T_rd": 0,  # Ring-down time
+                "Z": 50,  # Default impedance
+                "source": "BVD Extractor",
+                "version": "1.0",
+                
+                # BVD/MBVD parameters for simulator
+                "bvd": {
+                    "R_s": self.bvd_params['R1'],  # Series resistance
+                    "L_s": self.bvd_params['L1'],  # Series inductance (H)
+                    "C_s": self.bvd_params['C1'],  # Series capacitance (F)
+                    "C_p": self.bvd_params['C0'],  # Parallel capacitance (F)
+                    "k": self.bvd_params.get('k', 0.0)  # Coupling coefficient
+                },
+                
+                "resonance": {
+                    "f_s": fs_kHz * 1000,  # Series resonance (Hz)
+                    "f_p": fp_kHz * 1000   # Parallel resonance (Hz)
+                }
+            }
+            
+            # Add MBVD-specific parameters if available
+            if model_type == 'MBVD' and 'R0' in self.bvd_params:
+                transducer_data["bvd"]["R_p"] = self.bvd_params['R0']  # Parallel loss resistance
+                transducer_data["bvd"]["tan_delta"] = self.bvd_params.get('tan_delta', 0.0)
+            
+            # Write JSON file
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(transducer_data, f, indent=2, ensure_ascii=False)
+            
+            QMessageBox.information(
+                self, "Success", 
+                f"Transducer model exported successfully!\n\n"
+                f"Model type: {model_type}\n"
+                f"File: {filename}\n\n"
+                f"This file can be used in SonarCore simulator.\n"
+                f"Place it in data/transducers/ directory."
+            )
+            
+            logger.info(f"Exported transducer model for simulator: {filename}")
+            logger.info(f"Model type: {model_type}, fs={fs_kHz:.2f} kHz, fp={fp_kHz:.2f} kHz")
+            
+        except Exception as e:
+            logger.error(f"Failed to export for simulator: {e}", exc_info=True)
+            QMessageBox.critical(self, "Error", f"Failed to export: {e}")
     
     def createCalibrationTab(self):
         widget = QWidget()
@@ -1029,44 +1306,72 @@ class GraphExtractorApp(QMainWindow):
         plot_layout = QVBoxLayout(plot_container)
         plot_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Smoothing settings
-        smoothing_group = QGroupBox("📊 Interactive Spline Smoothing")
-        smoothing_layout = QHBoxLayout()
+        # Fitting settings
+        fitting_group = QGroupBox("📊 Fitting Options")
+        fitting_layout = QVBoxLayout()
         
-        smoothing_layout.addWidget(QLabel("Smoothing level:"))
+        # First row: Fitting type selection
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("Fitting type:"))
         
-        from PyQt6.QtWidgets import QSlider
+        from PyQt6.QtWidgets import QComboBox
+        self.fitting_type_combo = QComboBox()
+        self.fitting_type_combo.addItems(["Spline", "Polynomial"])
+        self.fitting_type_combo.currentTextChanged.connect(self.onFittingTypeChanged)
+        type_layout.addWidget(self.fitting_type_combo)
+        
+        # Polynomial degree (only visible for polynomial)
+        type_layout.addWidget(QLabel("  Polynomial degree:"))
+        self.poly_degree_spin = QSpinBox()
+        self.poly_degree_spin.setMinimum(1)
+        self.poly_degree_spin.setMaximum(20)
+        self.poly_degree_spin.setValue(3)
+        self.poly_degree_spin.setEnabled(False)  # Disabled by default (spline selected)
+        self.poly_degree_spin.valueChanged.connect(self.onFittingParamsChanged)
+        type_layout.addWidget(self.poly_degree_spin)
+        
+        type_layout.addStretch()
+        fitting_layout.addLayout(type_layout)
+        
+        # Second row: Spline smoothing (only visible for spline)
+        spline_layout = QHBoxLayout()
+        spline_layout.addWidget(QLabel("Spline smoothing (0=exact, 1.0=strong):"))
+        
+        from PyQt6.QtWidgets import QSlider, QDoubleSpinBox
         self.smoothing_slider = QSlider(Qt.Orientation.Horizontal)
         self.smoothing_slider.setMinimum(0)
-        self.smoothing_slider.setMaximum(100)
+        self.smoothing_slider.setMaximum(100)  # 0-100 for slider, will convert to 0.0-1.0
         self.smoothing_slider.setValue(0)
         self.smoothing_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.smoothing_slider.setTickInterval(10)
         self.smoothing_slider.valueChanged.connect(self.updateSmoothing)
-        smoothing_layout.addWidget(self.smoothing_slider)
+        spline_layout.addWidget(self.smoothing_slider)
         
-        self.smoothing_value_label = QLabel("0")
-        self.smoothing_value_label.setMinimumWidth(40)
+        self.smoothing_value_label = QLabel("0.00")
+        self.smoothing_value_label.setMinimumWidth(50)
         self.smoothing_value_label.setStyleSheet("font-weight: bold; padding: 5px;")
-        smoothing_layout.addWidget(self.smoothing_value_label)
+        spline_layout.addWidget(self.smoothing_value_label)
         
-        smoothing_layout.addWidget(QLabel("  Fine tuning:"))
-        self.smoothing_fine = QLineEdit("0")
+        spline_layout.addWidget(QLabel("  Fine tuning:"))
+        self.smoothing_fine = QLineEdit("0.0")
         self.smoothing_fine.setMaximumWidth(80)
+        self.smoothing_fine.setToolTip("Smoothing value: 0.0 (exact fit) to 1.0 (strong smoothing)")
         self.smoothing_fine.returnPressed.connect(self.updateSmoothingFromInput)
-        smoothing_layout.addWidget(self.smoothing_fine)
+        spline_layout.addWidget(self.smoothing_fine)
         
         btn_apply_smoothing = QPushButton("Apply")
         btn_apply_smoothing.clicked.connect(self.updateSmoothingFromInput)
-        smoothing_layout.addWidget(btn_apply_smoothing)
+        spline_layout.addWidget(btn_apply_smoothing)
         
-        btn_reset_smoothing = QPushButton("Reset (0)")
+        btn_reset_smoothing = QPushButton("Reset (0.0)")
         btn_reset_smoothing.clicked.connect(lambda: self.smoothing_slider.setValue(0))
-        smoothing_layout.addWidget(btn_reset_smoothing)
+        spline_layout.addWidget(btn_reset_smoothing)
         
-        smoothing_layout.addStretch()
-        smoothing_group.setLayout(smoothing_layout)
-        plot_layout.addWidget(smoothing_group)
+        spline_layout.addStretch()
+        fitting_layout.addLayout(spline_layout)
+        
+        fitting_group.setLayout(fitting_layout)
+        plot_layout.addWidget(fitting_group)
         
         # Function management
         functions_group = QGroupBox("📋 Function Management")
@@ -1100,6 +1405,58 @@ class GraphExtractorApp(QMainWindow):
         functions_group.setLayout(functions_layout)
         plot_layout.addWidget(functions_group)
         
+        # BVD function assignment
+        bvd_assignment_group = QGroupBox("🔬 BVD Model Assignment")
+        bvd_assignment_layout = QVBoxLayout()
+        
+        # Conductance function selection
+        conductance_layout = QHBoxLayout()
+        conductance_layout.addWidget(QLabel("Conductance (G) function:"))
+        self.conductance_combo_tab4 = QComboBox()
+        self.conductance_combo_tab4.setMinimumWidth(200)
+        self.conductance_combo_tab4.currentIndexChanged.connect(self.onBVDAssignmentChanged)
+        conductance_layout.addWidget(self.conductance_combo_tab4)
+        conductance_layout.addStretch()
+        bvd_assignment_layout.addLayout(conductance_layout)
+        
+        # Susceptance function selection
+        susceptance_layout = QHBoxLayout()
+        susceptance_layout.addWidget(QLabel("Susceptance (B) function:"))
+        self.susceptance_combo_tab4 = QComboBox()
+        self.susceptance_combo_tab4.setMinimumWidth(200)
+        self.susceptance_combo_tab4.currentIndexChanged.connect(self.onBVDAssignmentChanged)
+        susceptance_layout.addWidget(self.susceptance_combo_tab4)
+        susceptance_layout.addStretch()
+        bvd_assignment_layout.addLayout(susceptance_layout)
+        
+        bvd_assignment_group.setLayout(bvd_assignment_layout)
+        plot_layout.addWidget(bvd_assignment_group)
+        
+        # Single button in TAB 4: Go to TAB 5 for model calculation
+        btn_go_to_tab5 = QPushButton("→ Go to TAB 5 (Model Calculation)")
+        btn_go_to_tab5.setStyleSheet("""
+            QPushButton {
+                font-size: 14px;
+                font-weight: bold;
+                padding: 12px;
+                background-color: #2196F3;
+                color: white;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #0b7dda;
+            }
+        """)
+        btn_go_to_tab5.setToolTip(
+            "After assigning Conductance and Susceptance functions above,\n"
+            "click here to go to TAB 5 where you will:\n"
+            "1. Select model type (BVD/MBVD)\n"
+            "2. Enter transducer parameters (C₀, fs)\n"
+            "3. Click 'Create Model' to calculate the model from your data."
+        )
+        btn_go_to_tab5.clicked.connect(lambda: self.tabs.setCurrentIndex(4))  # Go to TAB 5
+        plot_layout.addWidget(btn_go_to_tab5)
+        
         # Results plot
         self.result_plot = pg.PlotWidget()
         self.result_plot.setBackground('w')
@@ -1110,34 +1467,23 @@ class GraphExtractorApp(QMainWindow):
         
         splitter.addWidget(plot_container)
         
-        # Data table
+        # Data table - dynamic columns for each function
         self.result_table = QTableWidget()
-        self.result_table.setColumnCount(3)
-        self.result_table.setHorizontalHeaderLabels(['#', 'Frequency (kHz)', 'Value'])
+        # Will set columns dynamically based on number of functions
         splitter.addWidget(self.result_table)
         
         layout.addWidget(splitter)
         
-        # Transducer parameters
-        params_group = QGroupBox("Transducer Parameters")
-        params_layout = QHBoxLayout()
-        
-        params_layout.addWidget(QLabel("Static capacitance C₀ (nF):"))
-        self.input_c0 = QLineEdit("12")
-        self.input_c0.setMaximumWidth(150)
-        params_layout.addWidget(self.input_c0)
-        
-        params_layout.addWidget(QLabel("Resonant frequency fs (kHz):"))
-        self.input_fs = QLineEdit("25")
-        self.input_fs.setMaximumWidth(150)
-        params_layout.addWidget(self.input_fs)
-        
-        params_layout.addStretch()
-        params_group.setLayout(params_layout)
-        layout.addWidget(params_group)
-        
         # Buttons
         btn_layout = QHBoxLayout()
+        
+        btn_import_csv = QPushButton("📥 Import CSV")
+        btn_import_csv.clicked.connect(self.importCSV)
+        btn_layout.addWidget(btn_import_csv)
+        
+        btn_import_json = QPushButton("📥 Import JSON")
+        btn_import_json.clicked.connect(self.importJSON)
+        btn_layout.addWidget(btn_import_json)
         
         btn_export_csv = QPushButton("💾 Export CSV")
         btn_export_csv.clicked.connect(self.exportCSV)
@@ -1147,11 +1493,15 @@ class GraphExtractorApp(QMainWindow):
         btn_export_json.clicked.connect(self.exportJSON)
         btn_layout.addWidget(btn_export_json)
         
-        btn_layout.addStretch()
+        btn_export_simulator = QPushButton("🚀 Export for Simulator")
+        btn_export_simulator.setToolTip(
+            "Export BVD/MBVD parameters in format compatible with SonarCore simulator.\n"
+            "Creates a transducer JSON file that can be used in the simulator."
+        )
+        btn_export_simulator.clicked.connect(self.exportForSimulator)
+        btn_layout.addWidget(btn_export_simulator)
         
-        btn_bvd = QPushButton("🔬 Calculate BVD Model")
-        btn_bvd.clicked.connect(self.calculateBVD)
-        btn_layout.addWidget(btn_bvd)
+        btn_layout.addStretch()
         
         btn_new_func = QPushButton("➕ New Function")
         btn_new_func.clicked.connect(self.startNewFunction)
@@ -1576,10 +1926,10 @@ class GraphExtractorApp(QMainWindow):
             traceback.print_exc()
             return
         
-        # Create spline
+        # Create initial fitting (spline by default)
         try:
             # By default no smoothing, user will adjust in results
-            smoothing = 0
+            smoothing = 0.0
             
             spline = UnivariateSpline(x_data, y_data, s=smoothing, k=min(3, len(x_data)-1))
             
@@ -1592,17 +1942,47 @@ class GraphExtractorApp(QMainWindow):
             
             # Save function
             func_name = str(self.input_func_name.text())
+            
+            # Save Y range from TAB 2 for this function
+            y_range_tab2 = None
+            if hasattr(self, 'input_y_min') and hasattr(self, 'input_y_max'):
+                y_min_text = self.input_y_min.text().strip()
+                y_max_text = self.input_y_max.text().strip()
+                if y_min_text and y_max_text:
+                    try:
+                        y_range_tab2 = (float(y_min_text), float(y_max_text))
+                    except ValueError:
+                        pass
+            
             self.all_functions.append({
                 'name': func_name,
                 'data': self.extracted_data.copy(),
                 'original_points': real_points,
-                'visible': True  # Visibility flag
+                'visible': True,  # Visibility flag
+                'fitting_type': 'spline',  # Default fitting type
+                'smoothing': 0.0,  # Spline smoothing parameter (0.0-1.0)
+                'poly_degree': 3,  # Polynomial degree (if polynomial fitting)
+                'y_range_tab2': y_range_tab2  # Y range from TAB 2 for this function
             })
+            
+            # Update UI to match first function's fitting type
+            if len(self.all_functions) == 1:
+                self.fitting_type_combo.setCurrentText('Spline')
+                self.smoothing_slider.setValue(0)
+                self.smoothing_fine.setText("0.0")
+                self.smoothing_value_label.setText("0.00")
             
             # Show results
             self.showResults()
             self.tabs.setTabEnabled(3, True)
             self.tabs.setCurrentIndex(3)
+            
+            # Update BVD function assignment lists in TAB 4
+            self.updateBVDAssignmentLists()
+            
+            # Update BVD function lists if BVD tab exists
+            if hasattr(self, 'conductance_combo'):
+                self.updateBVDFunctionLists()
             
             QMessageBox.information(
                 self, "Data Extracted", 
@@ -1617,7 +1997,20 @@ class GraphExtractorApp(QMainWindow):
     
     def onFunctionSelected(self):
         """Handle function selection from list"""
-        pass  # Can add highlighting of selected function
+        current_row = self.functions_list.currentRow()
+        if current_row >= 0 and current_row < len(self.all_functions):
+            func = self.all_functions[current_row]
+            # Update UI to match selected function's fitting parameters
+            fitting_type = func.get('fitting_type', 'spline')
+            if fitting_type == 'polynomial':
+                self.fitting_type_combo.setCurrentText('Polynomial')
+                self.poly_degree_spin.setValue(func.get('poly_degree', 3))
+            else:
+                self.fitting_type_combo.setCurrentText('Spline')
+                smoothing = func.get('smoothing', 0.0)
+                self.smoothing_slider.setValue(int(smoothing * 100))
+                self.smoothing_fine.setText(f"{smoothing:.2f}")
+                self.smoothing_value_label.setText(f"{smoothing:.2f}")
     
     def renameFunction(self):
         """Rename selected function"""
@@ -1659,6 +2052,77 @@ class GraphExtractorApp(QMainWindow):
             if not self.all_functions:
                 QMessageBox.information(self, "Information", "All functions deleted. Can extract new data.")
     
+    def updateBVDAssignmentLists(self):
+        """Update BVD function assignment combo boxes in TAB 4"""
+        if not hasattr(self, 'conductance_combo_tab4'):
+            return
+        
+        # Clear existing items
+        self.conductance_combo_tab4.clear()
+        self.susceptance_combo_tab4.clear()
+        
+        # Add all functions
+        for func in self.all_functions:
+            func_name = func['name']
+            self.conductance_combo_tab4.addItem(func_name)
+            self.susceptance_combo_tab4.addItem(func_name)
+        
+        # Try to auto-select based on existing assignment first, then names
+        conductance_selected = False
+        susceptance_selected = False
+        
+        for i, func in enumerate(self.all_functions):
+            if func.get('bvd_type') == 'conductance':
+                self.conductance_combo_tab4.setCurrentIndex(i)
+                conductance_selected = True
+            elif func.get('bvd_type') == 'susceptance':
+                self.susceptance_combo_tab4.setCurrentIndex(i)
+                susceptance_selected = True
+        
+        # Fallback to name-based selection if no assignment exists
+        if not conductance_selected or not susceptance_selected:
+            for i, func in enumerate(self.all_functions):
+                name_lower = func['name'].lower()
+                if not conductance_selected and ('conductance' in name_lower or 'g' == name_lower):
+                    self.conductance_combo_tab4.setCurrentIndex(i)
+                    conductance_selected = True
+                elif not susceptance_selected and ('susceptance' in name_lower or 'b' == name_lower):
+                    self.susceptance_combo_tab4.setCurrentIndex(i)
+                    susceptance_selected = True
+        
+        # Trigger assignment update to save the selection
+        self.onBVDAssignmentChanged()
+    
+    def onBVDAssignmentChanged(self):
+        """Handle BVD function assignment change in TAB 4"""
+        # Store assignment in function data
+        if hasattr(self, 'conductance_combo_tab4') and hasattr(self, 'susceptance_combo_tab4'):
+            conductance_idx = self.conductance_combo_tab4.currentIndex()
+            susceptance_idx = self.susceptance_combo_tab4.currentIndex()
+            
+            # Clear previous assignments
+            for func in self.all_functions:
+                func['bvd_type'] = None
+            
+            # Set new assignments
+            if conductance_idx >= 0 and conductance_idx < len(self.all_functions):
+                self.all_functions[conductance_idx]['bvd_type'] = 'conductance'
+            
+            if susceptance_idx >= 0 and susceptance_idx < len(self.all_functions):
+                self.all_functions[susceptance_idx]['bvd_type'] = 'susceptance'
+            
+            # Enable TAB 5 if both functions are assigned
+            if (conductance_idx >= 0 and susceptance_idx >= 0 and 
+                conductance_idx < len(self.all_functions) and 
+                susceptance_idx < len(self.all_functions) and
+                conductance_idx != susceptance_idx):
+                self.tabs.setTabEnabled(4, True)  # Enable TAB 5
+            else:
+                self.tabs.setTabEnabled(4, False)  # Disable TAB 5 if assignments are invalid conductance_idx >= 0 and conductance_idx < len(self.all_functions):
+                self.all_functions[conductance_idx]['bvd_type'] = 'conductance'
+            if susceptance_idx >= 0 and susceptance_idx < len(self.all_functions):
+                self.all_functions[susceptance_idx]['bvd_type'] = 'susceptance'
+    
     def toggleFunction(self):
         """Show/hide selected function"""
         current_row = self.functions_list.currentRow()
@@ -1672,25 +2136,66 @@ class GraphExtractorApp(QMainWindow):
     
     def updateSmoothing(self, value):
         """Update spline when slider changes"""
-        self.smoothing_value_label.setText(str(value))
-        self.smoothing_fine.setText(str(value))
-        self.recalculateSplines(value)
+        # Convert slider value (0-100) to smoothing value (0.0-1.0)
+        smoothing_value = value / 100.0
+        self.smoothing_value_label.setText(f"{smoothing_value:.2f}")
+        self.smoothing_fine.setText(f"{smoothing_value:.2f}")
+        self.recalculateFitting()
     
     def updateSmoothingFromInput(self):
         """Update spline from text field"""
         try:
             value = float(self.smoothing_fine.text())
-            value = max(0, min(1000, value))  # Limit 0-1000
-            self.smoothing_slider.setValue(int(min(100, value)))  # Slider up to 100
-            self.smoothing_value_label.setText(f"{value:.1f}")
-            self.recalculateSplines(value)
+            value = max(0.0, min(1.0, value))  # Limit 0.0-1.0
+            # Convert to slider value (0-100)
+            slider_value = int(value * 100)
+            self.smoothing_slider.setValue(slider_value)
+            self.smoothing_value_label.setText(f"{value:.2f}")
+            self.recalculateFitting()
         except ValueError:
-            QMessageBox.warning(self, "Error", "Enter valid number")
+            QMessageBox.warning(self, "Error", "Enter valid number (0.0 to 1.0)")
     
-    def recalculateSplines(self, smoothing):
-        """Recalculate splines for all functions with new smoothing parameter"""
+    def onFittingTypeChanged(self, fitting_type):
+        """Handle fitting type change"""
+        # Enable/disable controls based on fitting type
+        if fitting_type == "Polynomial":
+            self.smoothing_slider.setEnabled(False)
+            self.smoothing_fine.setEnabled(False)
+            self.poly_degree_spin.setEnabled(True)
+        else:  # Spline
+            self.smoothing_slider.setEnabled(True)
+            self.smoothing_fine.setEnabled(True)
+            self.poly_degree_spin.setEnabled(False)
+        
+        # Update all functions with new fitting type
+        fitting_type_lower = fitting_type.lower()
+        for func in self.all_functions:
+            func['fitting_type'] = fitting_type_lower
+            # Initialize default parameters if needed
+            if fitting_type_lower == 'polynomial' and 'poly_degree' not in func:
+                func['poly_degree'] = self.poly_degree_spin.value()
+            elif fitting_type_lower == 'spline' and 'smoothing' not in func:
+                func['smoothing'] = 0.0
+        
+        self.recalculateFitting()
+    
+    def onFittingParamsChanged(self):
+        """Handle fitting parameter changes (polynomial degree)"""
+        poly_degree = self.poly_degree_spin.value()
+        for func in self.all_functions:
+            if func.get('fitting_type', 'spline') == 'polynomial':
+                func['poly_degree'] = poly_degree
+        self.recalculateFitting()
+    
+    def recalculateFitting(self):
+        """Recalculate fitting for all functions with current parameters"""
         if not self.all_functions:
             return
+        
+        # Get current fitting parameters from UI
+        fitting_type = self.fitting_type_combo.currentText().lower()
+        smoothing_value = float(self.smoothing_fine.text()) if self.smoothing_fine.isEnabled() else 0.0
+        poly_degree = self.poly_degree_spin.value()
         
         for func in self.all_functions:
             # Get original points
@@ -1698,19 +2203,46 @@ class GraphExtractorApp(QMainWindow):
             x_data = np.array([float(p[0]) for p in orig_points], dtype=np.float64)
             y_data = np.array([float(p[1]) for p in orig_points], dtype=np.float64)
             
-            # Recalculate spline with new parameter
+            # Update function parameters
+            func['fitting_type'] = fitting_type
+            if fitting_type == 'spline':
+                func['smoothing'] = smoothing_value
+            else:
+                func['poly_degree'] = poly_degree
+            
+            # Recalculate fitting
             try:
-                spline = UnivariateSpline(x_data, y_data, s=smoothing, k=min(3, len(x_data)-1))
-                x_dense = np.linspace(x_data.min(), x_data.max(), 200)
-                y_dense = spline(x_dense)
+                if fitting_type == 'spline':
+                    # Spline fitting with smoothing (0.0 = exact, 1.0 = strong smoothing)
+                    # Convert smoothing to appropriate scale for UnivariateSpline
+                    # UnivariateSpline uses s parameter where larger = more smoothing
+                    # We'll use a scale: s = smoothing * (max(y) - min(y))^2 * len(data)
+                    y_range = y_data.max() - y_data.min()
+                    s_param = smoothing_value * (y_range ** 2) * len(x_data) if y_range > 0 else 0
+                    
+                    spline = UnivariateSpline(x_data, y_data, s=s_param, k=min(3, len(x_data)-1))
+                    x_dense = np.linspace(x_data.min(), x_data.max(), 200)
+                    y_dense = spline(x_dense)
+                else:  # polynomial
+                    # Polynomial fitting
+                    # Limit degree to number of points - 1
+                    degree = min(poly_degree, len(x_data) - 1)
+                    if degree < 1:
+                        degree = 1
+                    
+                    # Fit polynomial
+                    poly = Polynomial.fit(x_data, y_data, degree)
+                    x_dense = np.linspace(x_data.min(), x_data.max(), 200)
+                    y_dense = poly(x_dense)
                 
                 # Update function data
                 func['data'] = list(zip(x_dense, y_dense))
             except Exception as e:
-                print(f"Error recalculating spline: {e}")
+                print(f"Error recalculating fitting: {e}")
         
         # Update display
         self.showResults()
+    
     
     def showResults(self):
         """Display results on plot with separate Y axes for each function"""
@@ -1723,6 +2255,13 @@ class GraphExtractorApp(QMainWindow):
                 axis.scene().removeItem(axis)
         
         self.extra_axes = []
+        
+        # Clear old additional ViewBoxes
+        for vb in self.extra_viewboxes:
+            if vb.scene():
+                vb.scene().removeItem(vb)
+        
+        self.extra_viewboxes = []
         
         # Clear main plot
         self.result_plot.clear()
@@ -1742,10 +2281,14 @@ class GraphExtractorApp(QMainWindow):
         # Colors for functions
         colors = [(0, 0, 255), (255, 0, 0), (0, 255, 0), (255, 0, 255), (0, 255, 255), (255, 255, 0)]
         
-        # For each function calculate range and scale to normalized range
-        y_ranges = []
-        normalized_data = []
+        # Check display mode (with fallback if checkbox not yet created)
+        if hasattr(self, 'use_real_y_ranges'):
+            use_real_ranges = self.use_real_y_ranges.isChecked()
+        else:
+            use_real_ranges = True  # Default: show real ranges
         
+        # For each function calculate range
+        y_ranges = []
         for func in visible_functions:
             data = func['data']
             y = [p[1] for p in data]
@@ -1753,184 +2296,394 @@ class GraphExtractorApp(QMainWindow):
             y_margin = (y_max - y_min) * 0.05 if y_max > y_min else 0.1
             y_range = (y_min - y_margin, y_max + y_margin)
             y_ranges.append(y_range)
-            print(f"DEBUG: Function '{func['name']}': Y from {y_min:.4f} to {y_max:.4f}, range with margin: {y_range[0]:.4f} - {y_range[1]:.4f}")
         
-        # Draw first function on main Y axis (left) without normalization
-        first_func = visible_functions[0]
-        original_idx = self.all_functions.index(first_func)
-        
-        data = first_func['data']
-        x = [p[0] for p in data]
-        y = [p[1] for p in data]
-        
-        print(f"DEBUG: First function Y values: min={min(y):.4f}, max={max(y):.4f}")
-        print(f"DEBUG: Setting Y range: {y_ranges[0][0]:.4f} - {y_ranges[0][1]:.4f}")
-        
-        data = first_func['data']
-        x = [p[0] for p in data]
-        y = [p[1] for p in data]
-        
-        color = colors[original_idx % len(colors)]
-        
-        # Spline for first function
-        self.result_plot.plot(x, y, pen=pg.mkPen(color, width=2), name=f"{first_func['name']} (spline)")
-        
-        # Original points for first function
-        orig = first_func['original_points']
-        ox = [p[0] for p in orig]
-        oy = [p[1] for p in orig]
-        
-        if len(orig) > 100:
-            color_with_alpha = color + (100,)
-            self.result_plot.plot(ox, oy, pen=None, symbol='o', 
+        if use_real_ranges:
+            # Mode 1: Scale functions using Y ranges from TAB 2
+            # Y ranges are taken from TAB 2 (saved in y_range_tab2 for each function)
+            
+            # Use single ViewBox - all functions scaled to their ranges from TAB 2
+            # But displayed in first function's range for visual alignment
+            main_vb = plot_item.getViewBox()
+            first_func = visible_functions[0]
+            
+            # Get first function's display range from TAB 2
+            first_axis_y_min = 0.0
+            first_axis_y_max = 1.0
+            if first_func.get('y_range_tab2') is not None:
+                first_axis_y_min, first_axis_y_max = first_func['y_range_tab2']
+            else:
+                # Fallback to data range
+                first_data = first_func['data']
+                if first_data:
+                    first_y_values = [p[1] for p in first_data]
+                    first_axis_y_min = min(first_y_values)
+                    first_axis_y_max = max(first_y_values)
+            
+            for i, func in enumerate(visible_functions):
+                original_idx = self.all_functions.index(func)
+                data = func['data']
+                x = [p[0] for p in data]
+                y_real = [p[1] for p in data]  # Real Y values - use these directly
+                
+                color = colors[original_idx % len(colors)]
+                
+                # Fitting for function
+                fitting_type = func.get('fitting_type', 'spline')
+                fitting_label = 'polynomial' if fitting_type == 'polynomial' else 'spline'
+                
+                # Original points
+                orig = func['original_points']
+                ox = [p[0] for p in orig]
+                oy_real = [p[1] for p in orig]  # Real Y values - use these directly
+                
+                # Get function's real data range
+                y_func_min, y_func_max = min(y_real), max(y_real)
+                if y_func_max == y_func_min:
+                    y_func_max = y_func_min + 0.1
+                
+                # Get Y range from TAB 2 for this function (for axis display)
+                func_name = func['name']
+                axis_y_min = y_func_min
+                axis_y_max = y_func_max
+                if func.get('y_range_tab2') is not None:
+                    axis_y_min, axis_y_max = func['y_range_tab2']
+                
+                # For 1:1 display, map values to first function's axis range
+                # Get first function's axis range for mapping
+                first_func = visible_functions[0]
+                first_axis_y_min = 0.0
+                first_axis_y_max = 1.0
+                if first_func.get('y_range_tab2') is not None:
+                    first_axis_y_min, first_axis_y_max = first_func['y_range_tab2']
+                else:
+                    # Fallback to data range
+                    first_data = first_func['data']
+                    if first_data:
+                        first_y_values = [p[1] for p in first_data]
+                        first_axis_y_min = min(first_y_values)
+                        first_axis_y_max = max(first_y_values)
+                
+                if i == 0:
+                    # First function - use real values directly (1:1 mapping)
+                    y_scaled = y_real.copy()
+                    oy_scaled = oy_real.copy()
+                else:
+                    # Map to first function's range: scaled = (real / axis_y_max) * first_axis_y_max
+                    y_scaled = []
+                    for y_val in y_real:
+                        if axis_y_max > 0:
+                            # Normalize to [0, 1] based on this function's axis
+                            normalized = y_val / axis_y_max
+                            # Map to first function's range
+                            scaled = normalized * first_axis_y_max
+                        else:
+                            scaled = 0.0
+                        y_scaled.append(scaled)
+                    
+                    oy_scaled = []
+                    for y_val in oy_real:
+                        if axis_y_max > 0:
+                            normalized = y_val / axis_y_max
+                            scaled = normalized * first_axis_y_max
+                        else:
+                            scaled = 0.0
+                        oy_scaled.append(scaled)
+                
+                # Plot scaled data
+                plot_item.plot(x, y_scaled, pen=pg.mkPen(color, width=2), name=f"{func['name']} ({fitting_label})")
+                
+                if len(orig) > 100:
+                    color_with_alpha = color + (100,)
+                    plot_item.plot(ox, oy_scaled, pen=None, symbol='o', 
                                  symbolBrush=color_with_alpha, symbolSize=3,
-                                 name=f"{first_func['name']} (points, {len(orig)})")
-        else:
-            self.result_plot.plot(ox, oy, pen=None, symbol='o', 
+                                 name=f"{func['name']} (points, {len(orig)})")
+                else:
+                    plot_item.plot(ox, oy_scaled, pen=None, symbol='o', 
                                  symbolBrush=color, symbolSize=8,
-                                 name=f"{first_func['name']} (points, {len(orig)})")
-        
-        # Set Y range for first function
-        plot_item.setYRange(y_ranges[0][0], y_ranges[0][1], padding=0)
-        print(f"DEBUG: setYRange called with {y_ranges[0][0]:.4f} - {y_ranges[0][1]:.4f}")
-        
-        # Configure main Y axis on left
-        left_axis = plot_item.getAxis('left')
-        left_axis.setLabel(first_func['name'], color=color)
-        left_axis.setPen(color)
-        
-        # Create custom ticks for left axis (first function)
-        y_base_min, y_base_max = y_ranges[0]
-        num_ticks = 6
-        left_tick_positions = []
-        for j in range(num_ticks):
-            norm_pos = j / (num_ticks - 1)
-            tick_value = y_base_min + norm_pos * (y_base_max - y_base_min)
-            left_tick_positions.append((tick_value, f'{tick_value:.3f}'))
-        left_axis.setTicks([left_tick_positions])
-        
-        # For remaining functions create additional right axes with scaling
-        for i in range(1, len(visible_functions)):
-            func = visible_functions[i]
-            original_idx = self.all_functions.index(func)
+                                 name=f"{func['name']} (points, {len(orig)})")
+                
+                # Create Y axis for this function
+                # Get Y range from TAB 2 that was saved when this function was extracted
+                # This will be shown on the axis (real values)
+                axis_y_min = y_func_min
+                axis_y_max = y_func_max
+                if func.get('y_range_tab2') is not None:
+                    axis_y_min, axis_y_max = func['y_range_tab2']
+                
+                if i == 0:
+                    # First function uses left axis - show values from TAB 2 (1:1 mapping, no custom ticks needed)
+                    left_axis = plot_item.getAxis('left')
+                    left_axis.setLabel(f"{func['name']} [{axis_y_min:.3f}, {axis_y_max:.3f}]", color=color)
+                    left_axis.setPen(color)
+                else:
+                    # Additional functions use right axes - show values from TAB 2
+                    # Need custom ticks to map display positions (in first function's range) to real axis values
+                    axis = pg.AxisItem('right')
+                    plot_item.layout.addItem(axis, 2, 3 + i - 1)
+                    self.extra_axes.append(axis)
+                    
+                    # Get first function's range for mapping
+                    first_func = visible_functions[0]
+                    first_axis_y_min = 0.0
+                    first_axis_y_max = 1.0
+                    if first_func.get('y_range_tab2') is not None:
+                        first_axis_y_min, first_axis_y_max = first_func['y_range_tab2']
+                    else:
+                        first_data = first_func['data']
+                        if first_data:
+                            first_y_values = [p[1] for p in first_data]
+                            first_axis_y_min = min(first_y_values)
+                            first_axis_y_max = max(first_y_values)
+                    
+                    # Create custom ticks: map display positions to real axis values
+                    num_ticks = 6
+                    tick_positions = []
+                    for j in range(num_ticks):
+                        norm_pos = j / (num_ticks - 1) if num_ticks > 1 else 0
+                        # Display position in first function's range
+                        display_pos = first_axis_y_min + norm_pos * (first_axis_y_max - first_axis_y_min)
+                        # Real axis value for this function
+                        # scaled = (real / axis_y_max) * first_axis_y_max
+                        # So: real = (scaled / first_axis_y_max) * axis_y_max
+                        if first_axis_y_max > 0:
+                            normalized = display_pos / first_axis_y_max
+                            axis_value = normalized * axis_y_max
+                        else:
+                            axis_value = axis_y_min + norm_pos * (axis_y_max - axis_y_min)
+                        tick_positions.append((display_pos, f'{axis_value:.3f}'))
+                    
+                    axis.setTicks([tick_positions])
+                    axis.setLabel(f"{func['name']} [{axis_y_min:.3f}, {axis_y_max:.3f}]", color=color)
+                    axis.setPen(color)
+                    axis.linkToView(main_vb)
             
-            data = func['data']
+            # Set Y range to first function's axis range (1:1 mapping)
+            # Get first function's axis range from TAB 2
+            first_func = visible_functions[0]
+            first_axis_y_min = 0.0
+            first_axis_y_max = 1.0
+            if first_func.get('y_range_tab2') is not None:
+                first_axis_y_min, first_axis_y_max = first_func['y_range_tab2']
+            else:
+                # Fallback to data range
+                first_data = first_func['data']
+                if first_data:
+                    first_y_values = [p[1] for p in first_data]
+                    first_axis_y_min = min(first_y_values)
+                    first_axis_y_max = max(first_y_values)
+            
+            # Set Y range to first function's axis range
+            main_vb.setYRange(first_axis_y_min, first_axis_y_max, padding=0)
+            main_vb.enableAutoRange(axis='x', enable=True)
+            main_vb.enableAutoRange(axis='y', enable=False)  # Fixed Y range for 1:1 display
+            # Trigger autozoom update for X axis only
+            main_vb.autoRange(padding=0.05)
+            
+        else:
+            # Mode 2: Scale all functions to first function's range (original behavior)
+            # Draw first function on main Y axis (left) without normalization
+            first_func = visible_functions[0]
+            original_idx = self.all_functions.index(first_func)
+            
+            data = first_func['data']
             x = [p[0] for p in data]
-            y_real = [p[1] for p in data]
-            
-            # Scale Y to first function range for display
-            y_func_min, y_func_max = y_ranges[i]
-            y_base_min, y_base_max = y_ranges[0]
-            
-            # Normalize Y of this function to first function range
-            y_scaled = []
-            for y_val in y_real:
-                # Normalize to [0, 1]
-                normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
-                # Scale to first function range
-                scaled = y_base_min + normalized * (y_base_max - y_base_min)
-                y_scaled.append(scaled)
+            y = [p[1] for p in data]
             
             color = colors[original_idx % len(colors)]
             
-            # Draw scaled data
-            self.result_plot.plot(x, y_scaled, pen=pg.mkPen(color, width=2), name=f"{func['name']} (spline)")
+            # Fitting for first function
+            fitting_type = first_func.get('fitting_type', 'spline')
+            fitting_label = 'polynomial' if fitting_type == 'polynomial' else 'spline'
+            self.result_plot.plot(x, y, pen=pg.mkPen(color, width=2), name=f"{first_func['name']} ({fitting_label})")
             
-            # Original points
-            orig = func['original_points']
+            # Original points for first function
+            orig = first_func['original_points']
             ox = [p[0] for p in orig]
-            oy_real = [p[1] for p in orig]
-            
-            # Scale original points
-            oy_scaled = []
-            for y_val in oy_real:
-                normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
-                scaled = y_base_min + normalized * (y_base_max - y_base_min)
-                oy_scaled.append(scaled)
+            oy = [p[1] for p in orig]
             
             if len(orig) > 100:
                 color_with_alpha = color + (100,)
-                self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
+                self.result_plot.plot(ox, oy, pen=None, symbol='o', 
                                      symbolBrush=color_with_alpha, symbolSize=3,
-                                     name=f"{func['name']} (points, {len(orig)})")
+                                     name=f"{first_func['name']} (points, {len(orig)})")
             else:
-                self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
+                self.result_plot.plot(ox, oy, pen=None, symbol='o', 
                                      symbolBrush=color, symbolSize=8,
-                                     name=f"{func['name']} (points, {len(orig)})")
+                                     name=f"{first_func['name']} (points, {len(orig)})")
             
-            # Create additional Y axis on right
-            axis = pg.AxisItem('right')
-            plot_item.layout.addItem(axis, 2, 3 + i)
-            self.extra_axes.append(axis)
+            # Set Y range for first function
+            plot_item.setYRange(y_ranges[0][0], y_ranges[0][1], padding=0)
             
-            # Create custom ticks for this axis
-            # Generate ticks in scaled coordinates but with real values
-            num_ticks = 5
-            tick_positions = []
+            # Configure main Y axis on left
+            left_axis = plot_item.getAxis('left')
+            left_axis.setLabel(first_func['name'], color=color)
+            left_axis.setPen(color)
+            
+            # Create custom ticks for left axis (first function)
+            y_base_min, y_base_max = y_ranges[0]
+            num_ticks = 6
+            left_tick_positions = []
             for j in range(num_ticks):
-                # Position in normalized space
                 norm_pos = j / (num_ticks - 1)
-                # Position in scaled coordinates (first function range)
-                scaled_pos = y_base_min + norm_pos * (y_base_max - y_base_min)
-                # Real value of this function
-                real_value = y_func_min + norm_pos * (y_func_max - y_func_min)
-                tick_positions.append((scaled_pos, f'{real_value:.3f}'))
+                tick_value = y_base_min + norm_pos * (y_base_max - y_base_min)
+                left_tick_positions.append((tick_value, f'{tick_value:.3f}'))
+            left_axis.setTicks([left_tick_positions])
             
-            axis.setTicks([tick_positions])
-            axis.setLabel(func['name'], color=color)
-            axis.setPen(color)
+            # For remaining functions create additional right axes with scaling
+            for i in range(1, len(visible_functions)):
+                func = visible_functions[i]
+                original_idx = self.all_functions.index(func)
+                
+                data = func['data']
+                x = [p[0] for p in data]
+                y_real = [p[1] for p in data]
+                
+                # Scale Y to first function range for display
+                y_func_min, y_func_max = y_ranges[i]
+                y_base_min, y_base_max = y_ranges[0]
+                
+                # Normalize Y of this function to first function range
+                y_scaled = []
+                for y_val in y_real:
+                    # Normalize to [0, 1]
+                    normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
+                    # Scale to first function range
+                    scaled = y_base_min + normalized * (y_base_max - y_base_min)
+                    y_scaled.append(scaled)
+                
+                color = colors[original_idx % len(colors)]
+                
+                # Draw scaled data
+                fitting_type = func.get('fitting_type', 'spline')
+                fitting_label = 'polynomial' if fitting_type == 'polynomial' else 'spline'
+                self.result_plot.plot(x, y_scaled, pen=pg.mkPen(color, width=2), name=f"{func['name']} ({fitting_label})")
+                
+                # Original points
+                orig = func['original_points']
+                ox = [p[0] for p in orig]
+                oy_real = [p[1] for p in orig]
+                
+                # Scale original points
+                oy_scaled = []
+                for y_val in oy_real:
+                    normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
+                    scaled = y_base_min + normalized * (y_base_max - y_base_min)
+                    oy_scaled.append(scaled)
+                
+                if len(orig) > 100:
+                    color_with_alpha = color + (100,)
+                    self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
+                                         symbolBrush=color_with_alpha, symbolSize=3,
+                                         name=f"{func['name']} (points, {len(orig)})")
+                else:
+                    self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
+                                         symbolBrush=color, symbolSize=8,
+                                         name=f"{func['name']} (points, {len(orig)})")
+                
+                # Create additional Y axis on right
+                axis = pg.AxisItem('right')
+                plot_item.layout.addItem(axis, 2, 3 + i - 1)
+                self.extra_axes.append(axis)
+                
+                # Create custom ticks for this axis
+                # Generate ticks in scaled coordinates but with real values
+                num_ticks = 5
+                tick_positions = []
+                for j in range(num_ticks):
+                    # Position in normalized space
+                    norm_pos = j / (num_ticks - 1)
+                    # Position in scaled coordinates (first function range)
+                    scaled_pos = y_base_min + norm_pos * (y_base_max - y_base_min)
+                    # Real value of this function
+                    real_value = y_func_min + norm_pos * (y_func_max - y_func_min)
+                    tick_positions.append((scaled_pos, f'{real_value:.3f}'))
+                
+                axis.setTicks([tick_positions])
+                axis.setLabel(func['name'], color=color)
+                axis.setPen(color)
+                
+                # Link axis to main ViewBox
+                axis.linkToView(plot_item.vb)
             
-            # Link axis to main ViewBox
-            axis.linkToView(plot_item.vb)
+            plot_item.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
+            plot_item.enableAutoRange(axis=pg.ViewBox.XAxis, enable=True)
+            plot_item.setYRange(y_ranges[0][0], y_ranges[0][1], padding=0)
+            plot_item.vb.setLimits(yMin=y_ranges[0][0], yMax=y_ranges[0][1])
         
         # Add legend
         plot_item.addLegend()
         
-        # CRITICALLY IMPORTANT: Disable auto range and explicitly set Y range
-        # at the end AFTER adding legend and all elements
-        print(f"DEBUG: Final Y range setting: {y_ranges[0][0]:.4f} - {y_ranges[0][1]:.4f}")
-        plot_item.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
-        plot_item.enableAutoRange(axis=pg.ViewBox.XAxis, enable=True)
-        plot_item.setYRange(y_ranges[0][0], y_ranges[0][1], padding=0)
         
-        # Also set limits to prevent automatic scaling
-        plot_item.vb.setLimits(yMin=y_ranges[0][0], yMax=y_ranges[0][1])
-        
-        # Check what we got
-        actual_range = plot_item.vb.viewRange()
-        print(f"DEBUG: Actual range after setting: Y from {actual_range[1][0]:.4f} to {actual_range[1][1]:.4f}")
-        
-        
-        # Fill table with ALL functions
+        # Fill table with ALL functions - each function in its own columns
         if self.all_functions:
-            # Count total number of rows (all points of all functions + headers)
-            total_rows = 0
-            for func in self.all_functions:
-                total_rows += 1  # Function header
-                total_rows += len(func['data'])  # Function data
+            # Calculate table structure: each function gets 3 columns (#, Frequency, Value)
+            num_functions = len(self.all_functions)
+            num_columns = num_functions * 3
+            self.result_table.setColumnCount(num_columns)
             
+            # Set column headers
+            headers = []
+            for func in self.all_functions:
+                headers.extend([f"#{func['name']}", f"Freq {func['name']}", f"Value {func['name']}"])
+            self.result_table.setHorizontalHeaderLabels(headers)
+            
+            # Find maximum number of data points
+            max_points = max(len(func['data']) for func in self.all_functions) if self.all_functions else 0
+            
+            # Add rows: 1 header row + 1 range row + data rows
+            total_rows = 2 + max_points
             self.result_table.setRowCount(total_rows)
             
-            row_idx = 0
-            for func in self.all_functions:
-                # Function header
+            # Row 0: Function headers
+            for col_idx, func in enumerate(self.all_functions):
+                col_start = col_idx * 3
                 header_item = QTableWidgetItem(f"=== {func['name']} ===")
                 header_item.setBackground(QColor(200, 220, 255))
                 font = header_item.font()
                 font.setBold(True)
                 header_item.setFont(font)
-                self.result_table.setItem(row_idx, 0, header_item)
-                self.result_table.setItem(row_idx, 1, QTableWidgetItem(""))
-                self.result_table.setItem(row_idx, 2, QTableWidgetItem(""))
-                row_idx += 1
-                
-                # Function data
+                # Merge cells for header
+                self.result_table.setItem(0, col_start, header_item)
+                self.result_table.setSpan(0, col_start, 1, 3)
+            
+            # Row 1: Range info for each function
+            for col_idx, func in enumerate(self.all_functions):
+                col_start = col_idx * 3
                 data = func['data']
-                for i, (x, y) in enumerate(data):
-                    self.result_table.setItem(row_idx, 0, QTableWidgetItem(str(i+1)))
-                    self.result_table.setItem(row_idx, 1, QTableWidgetItem(f"{x:.4f}"))
-                    self.result_table.setItem(row_idx, 2, QTableWidgetItem(f"{y:.6f}"))
-                    row_idx += 1
+                if data:
+                    x_values = [p[0] for p in data]
+                    y_values = [p[1] for p in data]
+                    x_min, x_max = min(x_values), max(x_values)
+                    y_min, y_max = min(y_values), max(y_values)
+                    
+                    range_item = QTableWidgetItem(f"Y=[{y_min:.6f}, {y_max:.6f}]")
+                    range_item.setBackground(QColor(240, 240, 255))
+                    font = range_item.font()
+                    font.setItalic(True)
+                    range_item.setFont(font)
+                    self.result_table.setItem(1, col_start, range_item)
+                    self.result_table.setSpan(1, col_start, 1, 3)
+            
+            # Rows 2+: Data points
+            for row_idx in range(max_points):
+                table_row = row_idx + 2
+                for col_idx, func in enumerate(self.all_functions):
+                    col_start = col_idx * 3
+                    data = func['data']
+                    
+                    if row_idx < len(data):
+                        x, y = data[row_idx]
+                        self.result_table.setItem(table_row, col_start, QTableWidgetItem(str(row_idx + 1)))
+                        self.result_table.setItem(table_row, col_start + 1, QTableWidgetItem(f"{x:.4f}"))
+                        self.result_table.setItem(table_row, col_start + 2, QTableWidgetItem(f"{y:.6f}"))
+                    else:
+                        # Empty cells if function has fewer points
+                        self.result_table.setItem(table_row, col_start, QTableWidgetItem(""))
+                        self.result_table.setItem(table_row, col_start + 1, QTableWidgetItem(""))
+                        self.result_table.setItem(table_row, col_start + 2, QTableWidgetItem(""))
+            
+            # Resize columns to fit content
+            self.result_table.resizeColumnsToContents()
     
     def exportCSV(self):
         if not self.all_functions:
@@ -1972,10 +2725,18 @@ class GraphExtractorApp(QMainWindow):
             try:
                 export_data = []
                 for func in self.all_functions:
-                    export_data.append({
+                    func_data = {
                         'name': func['name'],
-                        'data': [[x, y] for x, y in func['data']]
-                    })
+                        'data': [[x, y] for x, y in func['data']],
+                        'original_points': [[x, y] for x, y in func.get('original_points', [])],
+                        'fitting_type': func.get('fitting_type', 'spline'),
+                        'smoothing': func.get('smoothing', 0.0),
+                        'poly_degree': func.get('poly_degree', 3),
+                        'y_range_tab2': func.get('y_range_tab2'),
+                        'bvd_type': func.get('bvd_type'),
+                        'visible': func.get('visible', True)
+                    }
+                    export_data.append(func_data)
                 
                 with open(filename, 'w', encoding='utf-8') as f:
                     json.dump(export_data, f, indent=2, ensure_ascii=False)
@@ -1983,6 +2744,220 @@ class GraphExtractorApp(QMainWindow):
                 QMessageBox.information(self, "Success", "Data exported to JSON")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save: {e}")
+    
+    def loadDataFromCSV(self):
+        """Load data from CSV file (wrapper for importCSV)"""
+        self.importCSV()
+    
+    def loadDataFromJSON(self):
+        """Load data from JSON file (wrapper for importJSON)"""
+        self.importJSON()
+    
+    def importJSON(self):
+        """Import functions from JSON file"""
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Load JSON", "", "JSON Files (*.json)"
+        )
+        
+        if filename:
+            try:
+                with open(filename, 'r', encoding='utf-8') as f:
+                    import_data = json.load(f)
+                
+                if not import_data:
+                    QMessageBox.warning(self, "Error", "JSON file is empty")
+                    return
+                
+                # Clear existing functions or append?
+                reply = QMessageBox.question(
+                    self, "Import Functions",
+                    "Replace existing functions or add to them?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                
+                if reply == QMessageBox.StandardButton.Yes:
+                    self.all_functions = []
+                
+                # Import functions
+                for func_data in import_data:
+                    # Reconstruct function data
+                    func = {
+                        'name': func_data.get('name', 'Imported Function'),
+                        'data': [(p[0], p[1]) for p in func_data.get('data', [])],
+                        'original_points': [(p[0], p[1]) for p in func_data.get('original_points', [])],
+                        'fitting_type': func_data.get('fitting_type', 'spline'),
+                        'smoothing': func_data.get('smoothing', 0.0),
+                        'poly_degree': func_data.get('poly_degree', 3),
+                        'y_range_tab2': func_data.get('y_range_tab2'),
+                        'bvd_type': func_data.get('bvd_type'),
+                        'visible': func_data.get('visible', True)
+                    }
+                    self.all_functions.append(func)
+                
+                # Update UI
+                self.updateBVDAssignmentLists()
+                self.showResults()
+                self.tabs.setTabEnabled(3, True)
+                # Enable other tabs
+                self.tabs.setTabEnabled(1, True)  # Coordinates tab (may not be needed, but enable anyway)
+                self.tabs.setTabEnabled(2, True)  # Data Points tab (may not be needed, but enable anyway)
+                
+                QMessageBox.information(self, "Success", f"Imported {len(import_data)} function(s)")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load: {e}")
+                import traceback
+                traceback.print_exc()
+    
+    def loadDataFromCSV(self):
+        """Load data from CSV file (wrapper for importCSV)"""
+        self.importCSV()
+    
+    def loadDataFromJSON(self):
+        """Load data from JSON file (wrapper for importJSON)"""
+        self.importJSON()
+    
+    def importCSV(self):
+        """Import functions from CSV file"""
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Load CSV", "", "CSV Files (*.csv)"
+        )
+        
+        if filename:
+            try:
+                functions_data = []
+                current_func = None
+                
+                with open(filename, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    
+                    for row in reader:
+                        if not row:
+                            continue
+                        
+                        # Check if it's a function name header
+                        if row[0].startswith('#'):
+                            if current_func:
+                                functions_data.append(current_func)
+                            current_func = {
+                                'name': row[0].strip('# ').strip(),
+                                'data': []
+                            }
+                        elif len(row) >= 2 and row[0] != 'Frequency (kHz)' and row[1] != 'Value':
+                            # Data row
+                            try:
+                                freq = float(row[0])
+                                value = float(row[1])
+                                if current_func:
+                                    current_func['data'].append((freq, value))
+                            except ValueError:
+                                continue
+                
+                # Add last function
+                if current_func and current_func['data']:
+                    functions_data.append(current_func)
+                
+                if not functions_data:
+                    QMessageBox.warning(self, "Error", "No valid data found in CSV file")
+                    return
+                
+                # Clear existing functions or append?
+                reply = QMessageBox.question(
+                    self, "Import Functions",
+                    "Replace existing functions or add to them?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                
+                if reply == QMessageBox.StandardButton.Yes:
+                    self.all_functions = []
+                
+                # Import functions
+                for func_data in functions_data:
+                    func = {
+                        'name': func_data['name'],
+                        'data': func_data['data'],
+                        'original_points': func_data['data'].copy(),  # Use same data as original
+                        'fitting_type': 'spline',  # Default
+                        'smoothing': 0.0,
+                        'poly_degree': 3,
+                        'y_range_tab2': None,
+                        'bvd_type': None,
+                        'visible': True
+                    }
+                    self.all_functions.append(func)
+                
+                # Recalculate fitting for imported functions
+                for func in self.all_functions:
+                    if func['data']:
+                        # Recalculate with default parameters
+                        self.recalculateFittingForFunction(func)
+                
+                # Update UI
+                self.updateBVDAssignmentLists()
+                self.showResults()
+                self.tabs.setTabEnabled(3, True)
+                # Enable other tabs
+                self.tabs.setTabEnabled(1, True)  # Coordinates tab (may not be needed, but enable anyway)
+                self.tabs.setTabEnabled(2, True)  # Data Points tab (may not be needed, but enable anyway)
+                
+                QMessageBox.information(self, "Success", f"Imported {len(functions_data)} function(s)")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load CSV: {e}")
+                import traceback
+                traceback.print_exc()
+    
+    def recalculateFittingForFunction(self, func):
+        """Recalculate fitting for a function"""
+        if not func.get('original_points'):
+            return
+        
+        # Get original points
+        original_points = func['original_points']
+        if len(original_points) < 2:
+            return
+        
+        x_data = np.array([p[0] for p in original_points])
+        y_data = np.array([p[1] for p in original_points])
+        
+        # Sort by x
+        sort_idx = np.argsort(x_data)
+        x_data = x_data[sort_idx]
+        y_data = y_data[sort_idx]
+        
+        fitting_type = func.get('fitting_type', 'spline')
+        
+        if fitting_type == 'spline':
+            # Spline fitting
+            smoothing = func.get('smoothing', 0.0)
+            y_range = y_data.max() - y_data.min()
+            if y_range == 0:
+                y_range = 1.0
+            s_param = smoothing * (y_range ** 2) * len(x_data)
+            
+            try:
+                spline = UnivariateSpline(x_data, y_data, s=s_param)
+                x_fit = np.linspace(x_data.min(), x_data.max(), 200)
+                y_fit = spline(x_fit)
+                func['data'] = [(x, y) for x, y in zip(x_fit, y_fit)]
+            except Exception:
+                # Fallback to linear interpolation
+                func['data'] = [(x, y) for x, y in zip(x_data, y_data)]
+        else:
+            # Polynomial fitting
+            poly_degree = func.get('poly_degree', 3)
+            max_degree = min(poly_degree, len(x_data) - 1)
+            if max_degree < 1:
+                max_degree = 1
+            
+            try:
+                poly = Polynomial.fit(x_data, y_data, max_degree)
+                x_fit = np.linspace(x_data.min(), x_data.max(), 200)
+                y_fit = poly(x_fit)
+                func['data'] = [(x, y) for x, y in zip(x_fit, y_fit)]
+            except Exception:
+                # Fallback to linear interpolation
+                func['data'] = [(x, y) for x, y in zip(x_data, y_data)]
     
     def startNewFunction(self):
         """Start extracting new function - with calibration choice"""
