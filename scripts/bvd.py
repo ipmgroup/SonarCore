@@ -22,7 +22,9 @@ import csv
 import json
 from bvd_model import calculate_bvd_parameters, bvd_admittance, calculate_model_curves
 from transducer_models import (
-    calculate_mbvd_parameters, mbvd_admittance, calculate_model_curves_mbvd
+    calculate_mbvd_parameters, mbvd_admittance, calculate_model_curves_mbvd,
+    calculate_ebvd_parameters, ebvd_admittance, calculate_model_curves_ebvd,
+    calculate_mason_parameters, mason_admittance, calculate_model_curves_mason
 )
 
 # Setup logging
@@ -438,11 +440,18 @@ class GraphExtractorApp(QMainWindow):
         combo_layout = QHBoxLayout()
         combo_layout.addWidget(QLabel("Transducer Model:"))
         self.model_type_combo = QComboBox()
-        self.model_type_combo.addItems(["BVD (Basic)", "MBVD (Modified BVD - Recommended)"])
+        self.model_type_combo.addItems([
+            "BVD (Basic)",
+            "MBVD (Modified BVD - Recommended)",
+            "EBVD (Extended BVD with Harmonics)",
+            "Mason (Physical Model - Advanced)"
+        ])
         self.model_type_combo.setCurrentIndex(1)  # Default to MBVD
         self.model_type_combo.setToolTip(
             "BVD: Basic 4-parameter model (C0, R1, L1, C1)\n"
-            "MBVD: Modified BVD with dielectric losses (R0) - usually more accurate\n\n"
+            "MBVD: Modified BVD with dielectric losses (R0) - usually more accurate\n"
+            "EBVD: Extended BVD with harmonic branches (R2, L2, C2) - best for complex resonances\n"
+            "Mason: Physical model based on acoustic waves - for ultrasonic transducers\n\n"
             "The model will be fitted to your experimental data using optimization."
         )
         combo_layout.addWidget(self.model_type_combo)
@@ -478,7 +487,7 @@ class GraphExtractorApp(QMainWindow):
         self.bvd_params_table = QTableWidget()
         self.bvd_params_table.setColumnCount(3)
         self.bvd_params_table.setHorizontalHeaderLabels(['Parameter', 'Value', 'Unit'])
-        self.bvd_params_table.setRowCount(9)  # Can accommodate MBVD (9 params) or BVD (8 params)
+        self.bvd_params_table.setRowCount(15)  # Can accommodate EBVD (up to 12 params), MBVD (9 params) or BVD (8 params)
         
         params = [
             ('C₀ (static capacitance)', '', 'nF'),
@@ -654,9 +663,102 @@ class GraphExtractorApp(QMainWindow):
             # Get selected model type
             model_type = self.model_type_combo.currentText()
             use_mbvd = "MBVD" in model_type
+            use_ebvd = "EBVD" in model_type
+            use_mason = "Mason" in model_type
             
             # Calculate parameters using selected model
-            if use_mbvd:
+            if use_mason:
+                logger.info("Starting Mason (Physical Model) parameter calculation...")
+                logger.info(f"Input parameters: C0={C0_nF} nF, fs={fs_kHz} kHz (initial)")
+                logger.info(f"Conductance data: {len(g_values)} points, range: {g_values.min():.4f} - {g_values.max():.4f} mS")
+                logger.info(f"Susceptance data: {len(b_values)} points, range: {b_values.min():.4f} - {b_values.max():.4f} mS")
+                
+                self.bvd_params = calculate_mason_parameters(
+                    freq_g, g_values_S, freq_b, b_values_S, C0
+                )
+                self.bvd_params['model_type'] = 'Mason'
+                
+                logger.info("Mason parameter calculation completed successfully")
+                logger.info(f"Calculated Mason parameters: k_t={self.bvd_params.get('k_t', 0):.4f}, t={self.bvd_params.get('t', 0)*1e3:.4f} mm")
+                logger.info(f"Physical parameters: Z_a={self.bvd_params.get('Z_a', 0):.2e} kg/(m²·s), A={self.bvd_params.get('A', 0)*1e6:.4f} mm²")
+                
+                # Update group title
+                self.params_group.setTitle("Calculated Mason Model Parameters")
+                
+                # Update table for Mason (physical parameters)
+                param_data = [
+                    ('C₀', f"{self.bvd_params['C0']*1e9:.2f}", 'nF'),
+                    ('R₀', f"{self.bvd_params.get('R0', 0):.2f}", 'Ohm'),
+                    ('R_m', f"{self.bvd_params.get('R_m', 0):.2f}", 'Ohm'),
+                    ('k_t', f"{self.bvd_params.get('k_t', 0):.4f}", ''),
+                    ('Z_a', f"{self.bvd_params.get('Z_a', 0):.2e}", 'kg/(m²·s)'),
+                    ('t', f"{self.bvd_params.get('t', 0)*1e3:.4f}", 'mm'),
+                    ('A', f"{self.bvd_params.get('A', 0)*1e6:.4f}", 'mm²'),
+                    ('ρ', f"{self.bvd_params.get('rho', 0):.0f}", 'kg/m³'),
+                    ('c', f"{self.bvd_params.get('c', 0):.0f}", 'm/s'),
+                    ('α', f"{self.bvd_params.get('alpha', 0):.4f}", 'Np/m'),
+                    ('fs', f"{self.bvd_params['fs']*1e-3:.4f}", 'kHz'),
+                    ('fp', f"{self.bvd_params['fp']*1e-3:.4f}", 'kHz'),
+                    ('Qm', f"{self.bvd_params['Qm']:.2f}", ''),
+                    ('k', f"{self.bvd_params['k']:.4f}", ''),
+                    ('tan δ', f"{self.bvd_params.get('tan_delta', 0.0):.6f}", '')
+                ]
+                
+                self.bvd_params_table.setRowCount(len(param_data))
+                for i, (name, val, unit) in enumerate(param_data):
+                    self.bvd_params_table.setItem(i, 0, QTableWidgetItem(name))
+                    self.bvd_params_table.setItem(i, 1, QTableWidgetItem(val))
+                    self.bvd_params_table.setItem(i, 2, QTableWidgetItem(unit))
+            elif use_ebvd:
+                logger.info("Starting EBVD (Extended BVD) parameter calculation...")
+                logger.info(f"Input parameters: C0={C0_nF} nF, fs={fs_kHz} kHz (initial)")
+                logger.info(f"Conductance data: {len(g_values)} points, range: {g_values.min():.4f} - {g_values.max():.4f} mS")
+                logger.info(f"Susceptance data: {len(b_values)} points, range: {b_values.min():.4f} - {b_values.max():.4f} mS")
+                
+                self.bvd_params = calculate_ebvd_parameters(
+                    freq_g, g_values_S, freq_b, b_values_S, C0, use_harmonic=True
+                )
+                self.bvd_params['model_type'] = 'EBVD'
+                
+                logger.info("EBVD parameter calculation completed successfully")
+                logger.info(f"Calculated EBVD parameters: R0={self.bvd_params.get('R0', 0):.2f} Ohm, R1={self.bvd_params.get('R1', 0):.2f} Ohm")
+                if 'R2' in self.bvd_params:
+                    logger.info(f"Harmonic branch: R2={self.bvd_params['R2']:.2f} Ohm, L2={self.bvd_params['L2']*1e3:.4f} mH, C2={self.bvd_params['C2']*1e9:.4f} nF")
+                
+                # Update group title
+                self.params_group.setTitle("Calculated EBVD Parameters")
+                
+                # Update table for EBVD (has R0 and optionally R2, L2, C2)
+                param_data = [
+                    ('C₀', f"{self.bvd_params['C0']*1e9:.2f}", 'nF'),
+                    ('R₀', f"{self.bvd_params.get('R0', 0):.2f}", 'Ohm'),
+                    ('fs', f"{self.bvd_params['fs']*1e-3:.4f}", 'kHz'),
+                    ('fp', f"{self.bvd_params['fp']*1e-3:.4f}", 'kHz'),
+                    ('R₁', f"{self.bvd_params['R1']:.2f}", 'Ohm'),
+                    ('L₁', f"{self.bvd_params['L1']*1e3:.4f}", 'mH'),
+                    ('C₁', f"{self.bvd_params['C1']*1e9:.4f}", 'nF'),
+                ]
+                
+                # Add harmonic branch if present
+                if 'R2' in self.bvd_params:
+                    param_data.extend([
+                        ('R₂', f"{self.bvd_params['R2']:.2f}", 'Ohm'),
+                        ('L₂', f"{self.bvd_params['L2']*1e3:.4f}", 'mH'),
+                        ('C₂', f"{self.bvd_params['C2']*1e9:.4f}", 'nF'),
+                    ])
+                
+                param_data.extend([
+                    ('Qm', f"{self.bvd_params['Qm']:.2f}", ''),
+                    ('k', f"{self.bvd_params['k']:.4f}", ''),
+                    ('tan δ', f"{self.bvd_params.get('tan_delta', 0.0):.6f}", '')
+                ])
+                
+                self.bvd_params_table.setRowCount(len(param_data))
+                for i, (name, val, unit) in enumerate(param_data):
+                    self.bvd_params_table.setItem(i, 0, QTableWidgetItem(name))
+                    self.bvd_params_table.setItem(i, 1, QTableWidgetItem(val))
+                    self.bvd_params_table.setItem(i, 2, QTableWidgetItem(unit))
+            elif use_mbvd:
                 logger.info("Starting MBVD (Modified BVD) parameter calculation...")
                 logger.info(f"Input parameters: C0={C0_nF} nF, fs={fs_kHz} kHz (initial)")
                 logger.info(f"Conductance data: {len(g_values)} points, range: {g_values.min():.4f} - {g_values.max():.4f} mS")
@@ -727,10 +829,23 @@ class GraphExtractorApp(QMainWindow):
                     self.bvd_params_table.setItem(i, 2, QTableWidgetItem(unit))
             
             # Log model creation
-            model_name = "MBVD" if use_mbvd else "BVD"
+            if use_mason:
+                model_name = "Mason"
+            elif use_ebvd:
+                model_name = "EBVD"
+            elif use_mbvd:
+                model_name = "MBVD"
+            else:
+                model_name = "BVD"
             logger.info(f"=== {model_name} Model Created Successfully ===")
             logger.info(f"Model type: {self.bvd_params.get('model_type', 'BVD')}")
-            if use_mbvd:
+            if use_mason:
+                logger.info(f"Mason model: k_t={self.bvd_params.get('k_t', 0):.4f}, t={self.bvd_params.get('t', 0)*1e3:.4f} mm")
+            elif use_ebvd:
+                logger.info(f"EBVD model: R0={self.bvd_params.get('R0', 0):.2f} Ohm, R1={self.bvd_params.get('R1', 0):.2f} Ohm")
+                if 'R2' in self.bvd_params:
+                    logger.info(f"EBVD harmonic: R2={self.bvd_params['R2']:.2f} Ohm")
+            elif use_mbvd:
                 logger.info(f"MBVD model: R0={self.bvd_params.get('R0', 0):.2f} Ohm, R1={self.bvd_params.get('R1', 0):.2f} Ohm")
             
             # Build model curves (pass values in mS for plotting)
@@ -741,9 +856,17 @@ class GraphExtractorApp(QMainWindow):
             self.tabs.setCurrentIndex(4)
             
             # Show success message
+            model_desc = {
+                'BVD': 'Basic BVD (4 parameters)',
+                'MBVD': 'Modified BVD with dielectric losses (5 parameters)',
+                'EBVD': 'Extended BVD with harmonic branches (7+ parameters)',
+                'Mason': 'Physical model based on acoustic waves (physical parameters)'
+            }
+            desc = model_desc.get(self.bvd_params.get('model_type', 'BVD'), model_name)
             QMessageBox.information(
                 self, f"{model_name} Model Created", 
                 f"{model_name} model has been successfully created from your data!\n\n"
+                f"Model: {desc}\n"
                 f"Parameters are displayed in the table above.\n"
                 f"Check the graphs below to see the model fit quality.\n\n"
                 f"Model type: {self.bvd_params.get('model_type', 'BVD')}"
@@ -771,7 +894,15 @@ class GraphExtractorApp(QMainWindow):
         model_type = self.bvd_params.get('model_type', 'BVD')
         logger.info(f"Plotting model curves using {model_type} model")
         
-        if model_type == 'MBVD' and 'R0' in self.bvd_params:
+        if model_type == 'Mason':
+            logger.info(f"Using Mason model with k_t={self.bvd_params.get('k_t', 0):.4f}, t={self.bvd_params.get('t', 0)*1e3:.4f} mm")
+            model_curves = calculate_model_curves_mason(freq_model, self.bvd_params)
+        elif model_type == 'EBVD':
+            logger.info(f"Using EBVD model with R0={self.bvd_params.get('R0', 0):.2f} Ohm, R1={self.bvd_params['R1']:.2f} Ohm")
+            if 'R2' in self.bvd_params:
+                logger.info(f"EBVD harmonic branch: R2={self.bvd_params['R2']:.2f} Ohm")
+            model_curves = calculate_model_curves_ebvd(freq_model, self.bvd_params)
+        elif model_type == 'MBVD' and 'R0' in self.bvd_params:
             logger.info(f"Using MBVD model with R0={self.bvd_params['R0']:.2f} Ohm, R1={self.bvd_params['R1']:.2f} Ohm")
             model_curves = calculate_model_curves_mbvd(freq_model, self.bvd_params)
         else:
