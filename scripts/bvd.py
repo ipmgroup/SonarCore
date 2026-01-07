@@ -2114,8 +2114,22 @@ class GraphExtractorApp(QMainWindow):
             # Enable tabs
             self.tabs.setTabEnabled(1, True)
             self.tabs.setTabEnabled(2, False)
-            self.tabs.setTabEnabled(3, False)
-            self.tabs.setTabEnabled(4, False)
+            
+            # If functions exist, enable TAB 4 (Results)
+            if self.all_functions:
+                self.tabs.setTabEnabled(3, True)  # Enable TAB 4 (Results)
+                # Check if BVD assignments are valid and enable TAB 5
+                conductance_assigned = any(f.get('bvd_type') == 'conductance' for f in self.all_functions)
+                susceptance_assigned = any(f.get('bvd_type') == 'susceptance' for f in self.all_functions)
+                if conductance_assigned and susceptance_assigned:
+                    self.tabs.setTabEnabled(4, True)  # Enable TAB 5 (BVD Model)
+                    logger.info("TAB 5 (BVD Model) kept enabled after PDF load - functions are assigned")
+                else:
+                    self.tabs.setTabEnabled(4, False)  # Disable TAB 5 if assignments are missing
+                    logger.info("TAB 5 (BVD Model) disabled after PDF load - assignments missing")
+            else:
+                self.tabs.setTabEnabled(3, False)  # Disable TAB 4 if no functions
+                self.tabs.setTabEnabled(4, False)  # Disable TAB 5 if no functions
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load PDF page: {e}")
@@ -2586,23 +2600,41 @@ class GraphExtractorApp(QMainWindow):
         self.conductance_combo_tab4.clear()
         self.susceptance_combo_tab4.clear()
         
-        # Add all functions
-        for func in self.all_functions:
+        # Build mapping: combo_index -> function_index (excluding TX/RX functions)
+        combo_to_func_map = []
+        func_to_combo_map = {}  # function_index -> combo_index
+        
+        # Add all functions, excluding TX/RX functions
+        combo_idx = 0
+        for func_idx, func in enumerate(self.all_functions):
             func_name = func['name']
+            # Skip TX/RX functions
+            if 'tx' in func_name.lower() or 'rx' in func_name.lower():
+                continue
             self.conductance_combo_tab4.addItem(func_name)
             self.susceptance_combo_tab4.addItem(func_name)
+            combo_to_func_map.append(func_idx)
+            func_to_combo_map[func_idx] = combo_idx
+            combo_idx += 1
         
-        logger.info(f"Updating BVD assignment lists with {len(self.all_functions)} functions")
-        for i, func in enumerate(self.all_functions):
-            logger.info(f"  Function {i}: '{func['name']}' (bvd_type: {func.get('bvd_type')})")
+        logger.info(f"Updating BVD assignment lists with {len(self.all_functions)} functions (excluding TX/RX)")
         
         # Try to auto-select based on existing assignment first, but validate it matches the name
         conductance_selected = False
         susceptance_selected = False
         
-        for i, func in enumerate(self.all_functions):
+        for func_idx, func in enumerate(self.all_functions):
+            # Skip TX/RX functions
+            if 'tx' in func['name'].lower() or 'rx' in func['name'].lower():
+                continue
+                
             name_lower = func['name'].lower().strip()
             bvd_type = func.get('bvd_type')
+            
+            # Get combo index for this function
+            combo_idx = func_to_combo_map.get(func_idx)
+            if combo_idx is None:
+                continue
             
             # Only use existing assignment if it makes sense (name matches type)
             if bvd_type == 'conductance':
@@ -2615,7 +2647,7 @@ class GraphExtractorApp(QMainWindow):
                     name_lower.startswith('g(') or
                     name_lower.endswith('(g)') or
                     '(g)' in name_lower.lower()):
-                    self.conductance_combo_tab4.setCurrentIndex(i)
+                    self.conductance_combo_tab4.setCurrentIndex(combo_idx)
                     conductance_selected = True
                     logger.info(f"Using existing assignment: '{func['name']}' as Conductance")
                 else:
@@ -2632,7 +2664,7 @@ class GraphExtractorApp(QMainWindow):
                     name_lower.startswith('b(') or
                     name_lower.endswith('(b)') or
                     '(b)' in name_lower.lower()):
-                    self.susceptance_combo_tab4.setCurrentIndex(i)
+                    self.susceptance_combo_tab4.setCurrentIndex(combo_idx)
                     susceptance_selected = True
                     logger.info(f"Using existing assignment: '{func['name']}' as Susceptance")
                 else:
@@ -2647,7 +2679,15 @@ class GraphExtractorApp(QMainWindow):
         
         # Check for Conductance first
         if not conductance_selected:
-            for i, func in enumerate(self.all_functions):
+            for func_idx, func in enumerate(self.all_functions):
+                # Skip TX/RX functions
+                if 'tx' in func['name'].lower() or 'rx' in func['name'].lower():
+                    continue
+                    
+                combo_idx = func_to_combo_map.get(func_idx)
+                if combo_idx is None:
+                    continue
+                    
                 name = func['name']
                 name_lower = name.lower().strip()
                 # Check if name contains "conductance" (case-insensitive)
@@ -2660,14 +2700,22 @@ class GraphExtractorApp(QMainWindow):
                     name_lower.startswith('g(') or
                     name_lower.endswith('(g)') or
                     '(g)' in name_lower.lower()):
-                    self.conductance_combo_tab4.setCurrentIndex(i)
+                    self.conductance_combo_tab4.setCurrentIndex(combo_idx)
                     conductance_selected = True
                     logger.info(f"Auto-assigned function '{name}' as Conductance (G)")
                     break
         
         # Check for Susceptance (independent check)
         if not susceptance_selected:
-            for i, func in enumerate(self.all_functions):
+            for func_idx, func in enumerate(self.all_functions):
+                # Skip TX/RX functions
+                if 'tx' in func['name'].lower() or 'rx' in func['name'].lower():
+                    continue
+                    
+                combo_idx = func_to_combo_map.get(func_idx)
+                if combo_idx is None:
+                    continue
+                    
                 name = func['name']
                 name_lower = name.lower().strip()
                 # Check if name contains "susceptance" (case-insensitive)
@@ -2681,9 +2729,9 @@ class GraphExtractorApp(QMainWindow):
                     name_lower.endswith('(b)') or
                     '(b)' in name_lower.lower()):
                     # Make sure we don't select the same function for both
-                    conductance_idx = self.conductance_combo_tab4.currentIndex()
-                    if i != conductance_idx:
-                        self.susceptance_combo_tab4.setCurrentIndex(i)
+                    conductance_combo_idx = self.conductance_combo_tab4.currentIndex()
+                    if combo_idx != conductance_combo_idx:
+                        self.susceptance_combo_tab4.setCurrentIndex(combo_idx)
                         susceptance_selected = True
                         logger.info(f"Auto-assigned function '{name}' as Susceptance (B)")
                         break
@@ -2699,31 +2747,41 @@ class GraphExtractorApp(QMainWindow):
         """Handle BVD function assignment change in TAB 4"""
         # Store assignment in function data
         if hasattr(self, 'conductance_combo_tab4') and hasattr(self, 'susceptance_combo_tab4'):
-            conductance_idx = self.conductance_combo_tab4.currentIndex()
-            susceptance_idx = self.susceptance_combo_tab4.currentIndex()
+            conductance_combo_idx = self.conductance_combo_tab4.currentIndex()
+            susceptance_combo_idx = self.susceptance_combo_tab4.currentIndex()
+            
+            # Build mapping from combo index to function index (excluding TX/RX)
+            combo_to_func_map = []
+            for func_idx, func in enumerate(self.all_functions):
+                if 'tx' in func['name'].lower() or 'rx' in func['name'].lower():
+                    continue
+                combo_to_func_map.append(func_idx)
             
             # Clear previous assignments
             for func in self.all_functions:
                 func['bvd_type'] = None
             
-            # Set new assignments
-            if conductance_idx >= 0 and conductance_idx < len(self.all_functions):
-                self.all_functions[conductance_idx]['bvd_type'] = 'conductance'
+            # Set new assignments using correct mapping
+            if conductance_combo_idx >= 0 and conductance_combo_idx < len(combo_to_func_map):
+                func_idx = combo_to_func_map[conductance_combo_idx]
+                self.all_functions[func_idx]['bvd_type'] = 'conductance'
             
-            if susceptance_idx >= 0 and susceptance_idx < len(self.all_functions):
-                self.all_functions[susceptance_idx]['bvd_type'] = 'susceptance'
+            if susceptance_combo_idx >= 0 and susceptance_combo_idx < len(combo_to_func_map):
+                func_idx = combo_to_func_map[susceptance_combo_idx]
+                self.all_functions[func_idx]['bvd_type'] = 'susceptance'
             
-            # Enable TAB 5 if both functions are assigned
-            if (conductance_idx >= 0 and susceptance_idx >= 0 and 
-                conductance_idx < len(self.all_functions) and 
-                susceptance_idx < len(self.all_functions) and
-                conductance_idx != susceptance_idx):
-                self.tabs.setTabEnabled(4, True)  # Enable TAB 5
+            # Enable TAB 4 (Results) if there are functions
+            if self.all_functions:
+                self.tabs.setTabEnabled(3, True)  # Enable TAB 4 (Results)
+            
+            # Enable TAB 5 (BVD Model) if both functions are assigned
+            if (conductance_combo_idx >= 0 and susceptance_combo_idx >= 0 and 
+                conductance_combo_idx < len(combo_to_func_map) and 
+                susceptance_combo_idx < len(combo_to_func_map) and
+                conductance_combo_idx != susceptance_combo_idx):
+                self.tabs.setTabEnabled(4, True)  # Enable TAB 5 (BVD Model)
             else:
-                self.tabs.setTabEnabled(4, False)  # Disable TAB 5 if assignments are invalid conductance_idx >= 0 and conductance_idx < len(self.all_functions):
-                self.all_functions[conductance_idx]['bvd_type'] = 'conductance'
-            if susceptance_idx >= 0 and susceptance_idx < len(self.all_functions):
-                self.all_functions[susceptance_idx]['bvd_type'] = 'susceptance'
+                self.tabs.setTabEnabled(4, False)  # Disable TAB 5 if assignments are invalid
     
     def toggleFunction(self):
         """Show/hide selected function"""
@@ -2871,15 +2929,39 @@ class GraphExtractorApp(QMainWindow):
         
         # Clear main plot
         self.result_plot.clear()
+        logger.info(f"=== showResults: Cleared plot, starting fresh ===")
+        logger.info(f"Total functions in all_functions: {len(self.all_functions)}")
+        for idx, func in enumerate(self.all_functions):
+            logger.info(f"  all_functions[{idx}]: '{func['name']}' (visible: {func.get('visible', True)}, bvd_type: {func.get('bvd_type')})")
         
-        # Update function list
+        # Update function list (excluding TX/RX functions)
         self.functions_list.clear()
         for i, func in enumerate(self.all_functions):
+            # Skip TX/RX functions in the list
+            if 'tx' in func['name'].lower() or 'rx' in func['name'].lower():
+                continue
             visible_mark = "✓" if func.get('visible', True) else "✗"
             self.functions_list.addItem(f"{visible_mark} {func['name']}")
         
-        # Collect only visible functions
-        visible_functions = [func for func in self.all_functions if func.get('visible', True)]
+        # Collect only visible functions, excluding TX/RX functions
+        # Also remove duplicates by function name to prevent double display
+        seen_names = set()
+        visible_functions = []
+        for func in self.all_functions:
+            if (func.get('visible', True) 
+                and 'tx' not in func['name'].lower() 
+                and 'rx' not in func['name'].lower()):
+                func_name = func['name']
+                # Skip if we've already seen this function name
+                if func_name not in seen_names:
+                    seen_names.add(func_name)
+                    visible_functions.append(func)
+                else:
+                    logger.warning(f"Skipping duplicate function: '{func_name}'")
+        
+        logger.info(f"=== showResults: Found {len(visible_functions)} visible functions (excluding TX/RX and duplicates) ===")
+        for i, func in enumerate(visible_functions):
+            logger.info(f"  Function {i}: '{func['name']}' (bvd_type: {func.get('bvd_type')})")
         
         if not visible_functions:
             return
@@ -2925,6 +3007,7 @@ class GraphExtractorApp(QMainWindow):
                     first_axis_y_min = min(first_y_values)
                     first_axis_y_max = max(first_y_values)
             
+            logger.info(f"=== Plotting {len(visible_functions)} functions in use_real_ranges mode ===")
             for i, func in enumerate(visible_functions):
                 original_idx = self.all_functions.index(func)
                 data = func['data']
@@ -2936,6 +3019,8 @@ class GraphExtractorApp(QMainWindow):
                 # Fitting for function
                 fitting_type = func.get('fitting_type', 'spline')
                 fitting_label = 'polynomial' if fitting_type == 'polynomial' else 'spline'
+                
+                logger.info(f"  Plotting function {i}: '{func['name']}' (index {original_idx}, {len(x)} points)")
                 
                 # Original points
                 orig = func['original_points']
@@ -2997,6 +3082,7 @@ class GraphExtractorApp(QMainWindow):
                 
                 # Plot scaled data
                 plot_item.plot(x, y_scaled, pen=pg.mkPen(color, width=2), name=f"{func['name']} ({fitting_label})")
+                logger.info(f"    Added plot curve for '{func['name']}'")
                 
                 if len(orig) > 100:
                     color_with_alpha = color + (100,)
@@ -3027,6 +3113,7 @@ class GraphExtractorApp(QMainWindow):
                     axis = pg.AxisItem('right')
                     plot_item.layout.addItem(axis, 2, 3 + i - 1)
                     self.extra_axes.append(axis)
+                    logger.info(f"    Created Y-axis {len(self.extra_axes)} (right) for '{func['name']}'")
                     
                     # Get first function's range for mapping
                     first_func = visible_functions[0]
@@ -3062,6 +3149,9 @@ class GraphExtractorApp(QMainWindow):
                     axis.setLabel(f"{func['name']} [{axis_y_min:.3f}, {axis_y_max:.3f}]", color=color)
                     axis.setPen(color)
                     axis.linkToView(main_vb)
+                    logger.info(f"    Created Y-axis {len(self.extra_axes)} (right) for '{func['name']}'")
+            
+            logger.info(f"=== Total: {len(visible_functions)} plots, {len(self.extra_axes)} right Y-axes ===")
             
             # Set Y range to first function's axis range (1:1 mapping)
             # Get first function's axis range from TAB 2
@@ -3118,78 +3208,86 @@ class GraphExtractorApp(QMainWindow):
                                       name=f"{first_func['name']} (points, {len(orig)})")
         
             # Set Y range for first function
-        plot_item.setYRange(y_ranges[0][0], y_ranges[0][1], padding=0)
-        
+            plot_item.setYRange(y_ranges[0][0], y_ranges[0][1], padding=0)
+            
             # Configure main Y axis on left
-        left_axis = plot_item.getAxis('left')
-        left_axis.setLabel(first_func['name'], color=color)
-        left_axis.setPen(color)
-        
+            left_axis = plot_item.getAxis('left')
+            left_axis.setLabel(first_func['name'], color=color)
+            left_axis.setPen(color)
+            
             # Create custom ticks for left axis (first function)
-        y_base_min, y_base_max = y_ranges[0]
-        num_ticks = 6
-        left_tick_positions = []
-        for j in range(num_ticks):
-            norm_pos = j / (num_ticks - 1)
-            tick_value = y_base_min + norm_pos * (y_base_max - y_base_min)
-            left_tick_positions.append((tick_value, f'{tick_value:.3f}'))
-        left_axis.setTicks([left_tick_positions])
-        
-            # For remaining functions create additional right axes with scaling
-        for i in range(1, len(visible_functions)):
-            func = visible_functions[i]
-            original_idx = self.all_functions.index(func)
-            
-            data = func['data']
-            x = [p[0] for p in data]
-            y_real = [p[1] for p in data]
-            
-                # Scale Y to first function range for display
-            y_func_min, y_func_max = y_ranges[i]
             y_base_min, y_base_max = y_ranges[0]
+            num_ticks = 6
+            left_tick_positions = []
+            for j in range(num_ticks):
+                norm_pos = j / (num_ticks - 1)
+                tick_value = y_base_min + norm_pos * (y_base_max - y_base_min)
+                left_tick_positions.append((tick_value, f'{tick_value:.3f}'))
+            left_axis.setTicks([left_tick_positions])
             
+            # For remaining functions create additional right axes with scaling
+            logger.info(f"=== Plotting {len(visible_functions)} functions in scaled mode ===")
+            logger.info(f"  Function 0: '{first_func['name']}' (left axis)")
+            for i in range(1, len(visible_functions)):
+                func = visible_functions[i]
+                original_idx = self.all_functions.index(func)
+                
+                logger.info(f"  Plotting function {i}: '{func['name']}' (index {original_idx}, will create right axis {i})")
+                
+                data = func['data']
+                x = [p[0] for p in data]
+                y_real = [p[1] for p in data]
+                
+                # Scale Y to first function range for display
+                y_func_min, y_func_max = y_ranges[i]
+                y_base_min, y_base_max = y_ranges[0]
+                
                 # Normalize Y of this function to first function range
-            y_scaled = []
-            for y_val in y_real:
+                y_scaled = []
+                for y_val in y_real:
                     # Normalize to [0, 1]
-                normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
+                    normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
                     # Scale to first function range
-                scaled = y_base_min + normalized * (y_base_max - y_base_min)
-                y_scaled.append(scaled)
+                    scaled = y_base_min + normalized * (y_base_max - y_base_min)
+                    y_scaled.append(scaled)
+                
+                color = colors[original_idx % len(colors)]
+                
+                # Draw scaled data
+                fitting_type = func.get('fitting_type', 'spline')
+                fitting_label = 'polynomial' if fitting_type == 'polynomial' else 'spline'
+                self.result_plot.plot(x, y_scaled, pen=pg.mkPen(color, width=2), name=f"{func['name']} ({fitting_label})")
+                logger.info(f"    Added plot curve for '{func['name']}'")
+                
+                # Original points
+                orig = func['original_points']
+                ox = [p[0] for p in orig]
+                oy_real = [p[1] for p in orig]
+                
+                # Scale original points
+                oy_scaled = []
+                for y_val in oy_real:
+                    normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
+                    scaled = y_base_min + normalized * (y_base_max - y_base_min)
+                    oy_scaled.append(scaled)
+                
+                if len(orig) > 100:
+                    color_with_alpha = color + (100,)
+                    self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
+                                          symbolBrush=color_with_alpha, symbolSize=3,
+                                          name=f"{func['name']} (points, {len(orig)})")
+                else:
+                    self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
+                                          symbolBrush=color, symbolSize=8,
+                                          name=f"{func['name']} (points, {len(orig)})")
+                
+                # Create additional Y axis on right
+                axis = pg.AxisItem('right')
+                plot_item.layout.addItem(axis, 2, 3 + i - 1)
+                self.extra_axes.append(axis)
+                logger.info(f"    Created Y-axis {len(self.extra_axes)} (right) for '{func['name']}'")
             
-            color = colors[original_idx % len(colors)]
-            
-            # Draw scaled data
-            fitting_type = func.get('fitting_type', 'spline')
-            fitting_label = 'polynomial' if fitting_type == 'polynomial' else 'spline'
-            self.result_plot.plot(x, y_scaled, pen=pg.mkPen(color, width=2), name=f"{func['name']} ({fitting_label})")
-            
-            # Original points
-            orig = func['original_points']
-            ox = [p[0] for p in orig]
-            oy_real = [p[1] for p in orig]
-            
-            # Scale original points
-            oy_scaled = []
-            for y_val in oy_real:
-                normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
-                scaled = y_base_min + normalized * (y_base_max - y_base_min)
-                oy_scaled.append(scaled)
-            
-            if len(orig) > 100:
-                color_with_alpha = color + (100,)
-                self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
-                                      symbolBrush=color_with_alpha, symbolSize=3,
-                                      name=f"{func['name']} (points, {len(orig)})")
-            else:
-                self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
-                                      symbolBrush=color, symbolSize=8,
-                                      name=f"{func['name']} (points, {len(orig)})")
-            
-            # Create additional Y axis on right
-            axis = pg.AxisItem('right')
-            plot_item.layout.addItem(axis, 2, 3 + i - 1)
-            self.extra_axes.append(axis)
+            logger.info(f"=== Total: {len(visible_functions)} plots, {len(self.extra_axes)} right Y-axes ===")
             
             # Create custom ticks for this axis
             # Generate ticks in scaled coordinates but with real values
@@ -3421,13 +3519,23 @@ class GraphExtractorApp(QMainWindow):
                 # Update UI
                 self.updateBVDAssignmentLists()
                 self.showResults()
-                self.tabs.setTabEnabled(3, True)
+                self.tabs.setTabEnabled(3, True)  # Enable TAB 4 (Results)
                 # Enable TAB 6 (RX/TX) if there are functions
                 if hasattr(self, 'tab_rxtx'):
                     self.tabs.setTabEnabled(5, True)
                 # Enable other tabs
                 self.tabs.setTabEnabled(1, True)  # Coordinates tab (may not be needed, but enable anyway)
                 self.tabs.setTabEnabled(2, True)  # Data Points tab (may not be needed, but enable anyway)
+                
+                # Check if BVD assignments are valid and enable TAB 5
+                conductance_assigned = any(f.get('bvd_type') == 'conductance' for f in self.all_functions)
+                susceptance_assigned = any(f.get('bvd_type') == 'susceptance' for f in self.all_functions)
+                if conductance_assigned and susceptance_assigned:
+                    self.tabs.setTabEnabled(4, True)  # Enable TAB 5 (BVD Model)
+                    logger.info("TAB 5 (BVD Model) enabled after JSON import - functions are assigned")
+                else:
+                    self.tabs.setTabEnabled(4, False)  # Disable TAB 5 if assignments are missing
+                    logger.info("TAB 5 (BVD Model) disabled after JSON import - assignments missing")
                 
                 QMessageBox.information(self, "Success", f"Imported {len(import_data)} function(s)")
             except Exception as e:
@@ -3537,12 +3645,22 @@ class GraphExtractorApp(QMainWindow):
                 # Update UI
                 self.updateBVDAssignmentLists()
                 self.showResults()
-                self.tabs.setTabEnabled(3, True)
+                self.tabs.setTabEnabled(3, True)  # Enable TAB 4 (Results)
                 # Enable TAB 6 (RX/TX) if there are functions
                 if hasattr(self, 'tab_rxtx'):
                     self.tabs.setTabEnabled(5, True)
                 # Enable other tabs
                 self.tabs.setTabEnabled(1, True)  # Coordinates tab (may not be needed, but enable anyway)
+                
+                # Check if BVD assignments are valid and enable TAB 5
+                conductance_assigned = any(f.get('bvd_type') == 'conductance' for f in self.all_functions)
+                susceptance_assigned = any(f.get('bvd_type') == 'susceptance' for f in self.all_functions)
+                if conductance_assigned and susceptance_assigned:
+                    self.tabs.setTabEnabled(4, True)  # Enable TAB 5 (BVD Model)
+                    logger.info("TAB 5 (BVD Model) enabled after CSV import - functions are assigned")
+                else:
+                    self.tabs.setTabEnabled(4, False)  # Disable TAB 5 if assignments are missing
+                    logger.info("TAB 5 (BVD Model) disabled after CSV import - assignments missing")
                 self.tabs.setTabEnabled(2, True)  # Data Points tab (may not be needed, but enable anyway)
                 
                 QMessageBox.information(self, "Success", f"Imported {len(functions_data)} function(s)")
