@@ -825,27 +825,323 @@ def calculate_mason_parameters(freq_g, g_values_S, freq_b, b_values_S, C0,
             (R_m_init * 0.01, R_m_init * 100)  # Mechanical loss resistance
         ]
         
-        # Try optimization
+        # Multi-stage optimization (same as EBVD - 7 stages)
         best_result = None
         best_error = 1e10
         
-        try:
-            result = minimize(mason_error, initial_params, method='L-BFGS-B', bounds=bounds,
-                            options={'maxiter': 2000, 'ftol': 1e-8})
-            if result.success and result.fun < best_error:
-                best_result = result
-                best_error = result.fun
-        except:
-            pass
+        # Multiple starting points (more variations)
+        initial_guesses = [
+            initial_params,
+            [k_t_init * 0.8, Z_a_init, t_init, alpha_init, R_m_init],
+            [k_t_init * 1.2, Z_a_init, t_init, alpha_init, R_m_init],
+            [k_t_init, Z_a_init * 0.5, t_init, alpha_init, R_m_init],
+            [k_t_init, Z_a_init * 2.0, t_init, alpha_init, R_m_init],
+            [k_t_init, Z_a_init, t_init * 0.8, alpha_init, R_m_init],
+            [k_t_init, Z_a_init, t_init * 1.2, alpha_init, R_m_init],
+            [k_t_init, Z_a_init, t_init, alpha_init, R_m_init * 0.5],
+            [k_t_init, Z_a_init, t_init, alpha_init, R_m_init * 2.0],
+        ]
         
+        # Stage 1: Initial optimization with multiple starting points
+        for start_params in initial_guesses:
+            try:
+                result = minimize(mason_error, start_params, method='L-BFGS-B', bounds=bounds,
+                                options={'maxiter': 5000, 'ftol': 1e-10, 'gtol': 1e-8})
+                if result.success and result.fun < best_error:
+                    best_result = result
+                    best_error = result.fun
+            except:
+                continue
+        
+        # Stage 2: Adaptive weighting optimization
+        if best_result is not None:
+            # Evaluate model with best parameters
+            A_temp = C0 * best_result.x[2] / (epsilon_r * epsilon_0)
+            A_temp = np.clip(A_temp, A_min, A_max)
+            Y_temp = mason_admittance(freq_common, C0, best_result.x[0], best_result.x[1], best_result.x[2],
+                                     A_temp, best_result.x[3], best_result.x[4])
+            if R0 > 0:
+                Y_temp += 1.0 / R0
+            if R1 > 0 and L1 > 0 and C1 > 0:
+                omega = 2 * np.pi * freq_common
+                Z_series = R1 + 1j * (omega * L1 - 1 / (omega * C1))
+                Y_series = 1 / (Z_series + 1e-12)
+                G_mbvd = np.real(Y_series)
+                Y_temp = Y_temp + 0.3 * G_mbvd
+            
+            g_temp = np.real(Y_temp)
+            rel_error_g_local = np.abs(g_temp - g_interp) / (np.abs(g_interp) + 1e-10)
+            
+            # Create adaptive weights
+            threshold_g = 0.05  # 5% relative error threshold
+            adaptive_weights_g_mason = np.ones_like(rel_error_g_local)
+            high_error_mask_g = rel_error_g_local > threshold_g
+            adaptive_weights_g_mason[high_error_mask_g] = 1.0 + 9.0 * np.exp(
+                np.clip((rel_error_g_local[high_error_mask_g] - threshold_g) / threshold_g, 0, 2)
+            )
+            very_high_error_mask_g = rel_error_g_local > 0.07
+            adaptive_weights_g_mason[very_high_error_mask_g] *= 2.0
+            
+            # Create error function with adaptive weights
+            def mason_error_adaptive(params):
+                k_t_ma, Z_a_ma, t_ma, alpha_ma, R_m_ma = params
+                if (k_t_ma <= 0 or k_t_ma >= 1 or Z_a_ma <= 0 or 
+                    t_ma < t_min or t_ma > t_max or alpha_ma < 0 or R_m_ma <= 0):
+                    return 1e10
+                
+                A_ma = C0 * t_ma / (epsilon_r * epsilon_0)
+                A_ma = np.clip(A_ma, A_min, A_max)
+                
+                Y_ma = mason_admittance(freq_common, C0, k_t_ma, Z_a_ma, t_ma, A_ma, alpha_ma, R_m_ma)
+                if R0 > 0:
+                    Y_ma += 1.0 / R0
+                if R1 > 0 and L1 > 0 and C1 > 0:
+                    omega = 2 * np.pi * freq_common
+                    Z_series = R1 + 1j * (omega * L1 - 1 / (omega * C1))
+                    Y_series = 1 / (Z_series + 1e-12)
+                    G_mbvd = np.real(Y_series)
+                    Y_ma = Y_ma + 0.3 * G_mbvd
+                
+                g_ma = np.real(Y_ma)
+                b_ma = np.imag(Y_ma)
+                
+                abs_error_g = np.abs(g_ma - g_interp)
+                abs_error_b = np.abs(b_ma - b_interp)
+                g_magnitude = np.abs(g_interp) + 1e-10
+                b_magnitude = np.abs(b_interp) + 1e-10
+                rel_error_g = abs_error_g / g_magnitude
+                rel_error_b = abs_error_b / b_magnitude
+                
+                combined_weight_g = resonance_weight * adaptive_weights_g_mason
+                rel_error_g_power = np.abs(rel_error_g) ** 1.5
+                error_g_mean_rel = np.mean(combined_weight_g * rel_error_g_power)
+                error_g_rel_sq = np.mean(combined_weight_g * rel_error_g**2)
+                error_g = 0.9 * error_g_mean_rel + 0.1 * error_g_rel_sq
+                
+                b_typical = np.max(np.abs(b_interp)) + 1e-10
+                error_b = np.mean((abs_error_b / b_typical)**2 + rel_error_b**2)
+                
+                return 30.0 * error_g + error_b
+            
+            # Re-optimize with adaptive weights
+            try:
+                result_adaptive = minimize(mason_error_adaptive, best_result.x, method='L-BFGS-B', bounds=bounds,
+                                         options={'maxiter': 3000, 'ftol': 1e-11, 'gtol': 1e-9})
+                if result_adaptive.success and result_adaptive.fun < best_error:
+                    best_result = result_adaptive
+                    best_error = result_adaptive.fun
+            except:
+                pass
+        
+        # Stage 3: SLSQP refinement
+        if best_result is not None:
+            best_start = best_result.x
+        else:
+            best_start = initial_params
+            
         try:
-            result2 = minimize(mason_error, initial_params, method='SLSQP', bounds=bounds,
-                             options={'maxiter': 2000, 'ftol': 1e-8})
+            result2 = minimize(mason_error, best_start, method='SLSQP', bounds=bounds,
+                             options={'maxiter': 5000, 'ftol': 1e-11})
             if result2.success and result2.fun < best_error:
                 best_result = result2
                 best_error = result2.fun
         except:
             pass
+        
+        # Stage 4: Differential evolution for global optimization
+        try:
+            from scipy.optimize import differential_evolution
+            result3 = differential_evolution(mason_error, bounds, seed=42,
+                                           maxiter=500, popsize=40, atol=1e-11, polish=True,
+                                           workers=1, updating='immediate')
+            if result3.success and result3.fun < best_error:
+                best_result = result3
+                best_error = result3.fun
+        except:
+            pass
+        
+        # Stage 5: Iterative refinement with narrowed bounds
+        if best_result is not None:
+            narrowed_bounds = [
+                (max(k_t_init * 0.5, best_result.x[0] * 0.8), min(0.99, best_result.x[0] * 1.2)),
+                (best_result.x[1] * 0.8, best_result.x[1] * 1.2),
+                (max(t_min, best_result.x[2] * 0.8), min(t_max, best_result.x[2] * 1.2)),
+                (best_result.x[3] * 0.8, min(100.0, best_result.x[3] * 1.2)),
+                (best_result.x[4] * 0.8, best_result.x[4] * 1.2),
+            ]
+            
+            try:
+                result5 = minimize(mason_error, best_result.x, method='L-BFGS-B', bounds=narrowed_bounds,
+                                  options={'maxiter': 3000, 'ftol': 1e-13, 'gtol': 1e-11})
+                if result5.success and result5.fun < best_error:
+                    best_result = result5
+                    best_error = result5.fun
+            except:
+                pass
+            
+            # Final ultra-precise polish
+            try:
+                result6 = minimize(mason_error, best_result.x, method='L-BFGS-B', bounds=bounds,
+                                  options={'maxiter': 2000, 'ftol': 1e-14, 'gtol': 1e-12})
+                if result6.success and result6.fun < best_error:
+                    best_result = result6
+                    best_error = result6.fun
+            except:
+                pass
+        
+        # Stage 6: Direct Mean Relative Error minimization - Conductance only
+        def mason_mre_error_g_only(params):
+            k_t_mre, Z_a_mre, t_mre, alpha_mre, R_m_mre = params
+            if (k_t_mre <= 0 or k_t_mre >= 1 or Z_a_mre <= 0 or
+                t_mre < t_min or t_mre > t_max or alpha_mre < 0 or R_m_mre <= 0):
+                return 1e10
+            
+            A_mre = np.clip(C0 * t_mre / (epsilon_r * epsilon_0), A_min, A_max)
+            Y_mre = mason_admittance(freq_common, C0, k_t_mre, Z_a_mre, t_mre, A_mre, alpha_mre, R_m_mre)
+            if R0 > 0:
+                Y_mre += 1.0 / R0
+            if R1 > 0 and L1 > 0 and C1 > 0:
+                omega = 2 * np.pi * freq_common
+                Z_series = R1 + 1j * (omega * L1 - 1 / (omega * C1))
+                Y_series = 1 / (Z_series + 1e-12)
+                G_mbvd = np.real(Y_series)
+                Y_mre = Y_mre + 0.3 * G_mbvd
+            
+            g_mre = np.real(Y_mre)
+            rel_error_g_mre = np.abs(g_mre - g_interp) / (np.abs(g_interp) + 1e-10)
+            mre_g = np.mean(rel_error_g_mre)
+            high_error_penalty = np.mean(np.maximum(0, rel_error_g_mre - 0.10)) * 10.0
+            return mre_g + high_error_penalty
+        
+        # Optimize with Conductance-only MRE-focused function (multiple attempts)
+        if best_result is not None:
+            for attempt in range(3):
+                try:
+                    if attempt == 0:
+                        start_mre = best_result.x
+                    elif attempt == 1:
+                        start_mre = best_result.x * 1.05
+                    else:
+                        start_mre = best_result.x * 0.95
+                    
+                    result7 = minimize(mason_mre_error_g_only, start_mre, method='L-BFGS-B', bounds=bounds,
+                                      options={'maxiter': 5000, 'ftol': 1e-13, 'gtol': 1e-11})
+                    if result7.success:
+                        A_test = np.clip(C0 * result7.x[2] / (epsilon_r * epsilon_0), A_min, A_max)
+                        Y_test = mason_admittance(freq_common, C0, result7.x[0], result7.x[1], result7.x[2],
+                                                 A_test, result7.x[3], result7.x[4])
+                        if R0 > 0:
+                            Y_test += 1.0 / R0
+                        if R1 > 0 and L1 > 0 and C1 > 0:
+                            omega = 2 * np.pi * freq_common
+                            Z_series = R1 + 1j * (omega * L1 - 1 / (omega * C1))
+                            Y_series = 1 / (Z_series + 1e-12)
+                            G_mbvd = np.real(Y_series)
+                            Y_test = Y_test + 0.3 * G_mbvd
+                        
+                        g_test = np.real(Y_test)
+                        mre_test = np.mean(np.abs(g_test - g_interp) / (np.abs(g_interp) + 1e-10))
+                        
+                        A_prev = np.clip(C0 * best_result.x[2] / (epsilon_r * epsilon_0), A_min, A_max)
+                        Y_prev = mason_admittance(freq_common, C0, best_result.x[0], best_result.x[1], best_result.x[2],
+                                                 A_prev, best_result.x[3], best_result.x[4])
+                        if R0 > 0:
+                            Y_prev += 1.0 / R0
+                        if R1 > 0 and L1 > 0 and C1 > 0:
+                            omega = 2 * np.pi * freq_common
+                            Z_series = R1 + 1j * (omega * L1 - 1 / (omega * C1))
+                            Y_series = 1 / (Z_series + 1e-12)
+                            G_mbvd = np.real(Y_series)
+                            Y_prev = Y_prev + 0.3 * G_mbvd
+                        
+                        g_prev = np.real(Y_prev)
+                        mre_prev = np.mean(np.abs(g_prev - g_interp) / (np.abs(g_interp) + 1e-10))
+                        
+                        b_test = np.imag(Y_test)
+                        b_prev = np.imag(Y_prev)
+                        mre_b_test = np.mean(np.abs(b_test - b_interp) / (np.abs(b_interp) + 1e-10))
+                        mre_b_prev = np.mean(np.abs(b_prev - b_interp) / (np.abs(b_interp) + 1e-10))
+                        
+                        if mre_test < mre_prev and (mre_b_test - mre_b_prev) < 0.005:
+                            best_result = result7
+                            best_error = mason_mre_error_g_only(result7.x)
+                            break
+                except:
+                    continue
+        
+        # Stage 7: Final combined optimization with very high weight on Conductance MRE
+        def mason_mre_error_combined(params):
+            k_t_mre, Z_a_mre, t_mre, alpha_mre, R_m_mre = params
+            if (k_t_mre <= 0 or k_t_mre >= 1 or Z_a_mre <= 0 or
+                t_mre < t_min or t_mre > t_max or alpha_mre < 0 or R_m_mre <= 0):
+                return 1e10
+            
+            A_mre = np.clip(C0 * t_mre / (epsilon_r * epsilon_0), A_min, A_max)
+            Y_mre = mason_admittance(freq_common, C0, k_t_mre, Z_a_mre, t_mre, A_mre, alpha_mre, R_m_mre)
+            if R0 > 0:
+                Y_mre += 1.0 / R0
+            if R1 > 0 and L1 > 0 and C1 > 0:
+                omega = 2 * np.pi * freq_common
+                Z_series = R1 + 1j * (omega * L1 - 1 / (omega * C1))
+                Y_series = 1 / (Z_series + 1e-12)
+                G_mbvd = np.real(Y_series)
+                Y_mre = Y_mre + 0.3 * G_mbvd
+            
+            g_mre = np.real(Y_mre)
+            b_mre = np.imag(Y_mre)
+            
+            rel_error_g_mre = np.abs(g_mre - g_interp) / (np.abs(g_interp) + 1e-10)
+            mre_g = np.mean(rel_error_g_mre)
+            
+            abs_error_b = np.abs(b_mre - b_interp)
+            b_magnitude = np.abs(b_interp) + 1e-10
+            rel_error_b = abs_error_b / b_magnitude
+            b_typical = np.max(np.abs(b_interp)) + 1e-10
+            error_b = np.mean((abs_error_b / b_typical)**2 + rel_error_b**2)
+            
+            return 100.0 * mre_g + error_b
+        
+        # Final optimization with combined function
+        if best_result is not None:
+            try:
+                result8 = minimize(mason_mre_error_combined, best_result.x, method='L-BFGS-B', bounds=bounds,
+                                  options={'maxiter': 4000, 'ftol': 1e-13, 'gtol': 1e-11})
+                if result8.success:
+                    A_test_final = np.clip(C0 * result8.x[2] / (epsilon_r * epsilon_0), A_min, A_max)
+                    Y_test_final = mason_admittance(freq_common, C0, result8.x[0], result8.x[1], result8.x[2],
+                                                   A_test_final, result8.x[3], result8.x[4])
+                    if R0 > 0:
+                        Y_test_final += 1.0 / R0
+                    if R1 > 0 and L1 > 0 and C1 > 0:
+                        omega = 2 * np.pi * freq_common
+                        Z_series = R1 + 1j * (omega * L1 - 1 / (omega * C1))
+                        Y_series = 1 / (Z_series + 1e-12)
+                        G_mbvd = np.real(Y_series)
+                        Y_test_final = Y_test_final + 0.3 * G_mbvd
+                    
+                    g_test_final = np.real(Y_test_final)
+                    mre_final = np.mean(np.abs(g_test_final - g_interp) / (np.abs(g_interp) + 1e-10))
+                    
+                    A_prev = np.clip(C0 * best_result.x[2] / (epsilon_r * epsilon_0), A_min, A_max)
+                    Y_prev = mason_admittance(freq_common, C0, best_result.x[0], best_result.x[1], best_result.x[2],
+                                             A_prev, best_result.x[3], best_result.x[4])
+                    if R0 > 0:
+                        Y_prev += 1.0 / R0
+                    if R1 > 0 and L1 > 0 and C1 > 0:
+                        omega = 2 * np.pi * freq_common
+                        Z_series = R1 + 1j * (omega * L1 - 1 / (omega * C1))
+                        Y_series = 1 / (Z_series + 1e-12)
+                        G_mbvd = np.real(Y_series)
+                        Y_prev = Y_prev + 0.3 * G_mbvd
+                    
+                    g_prev = np.real(Y_prev)
+                    mre_prev = np.mean(np.abs(g_prev - g_interp) / (np.abs(g_interp) + 1e-10))
+                    
+                    if mre_final < mre_prev:
+                        best_result = result8
+                        best_error = mason_mre_error_combined(result8.x)
+            except:
+                pass
         
         if best_result is not None:
             k_t_opt, Z_a_opt, t_opt, alpha_opt, R_m_opt = best_result.x
@@ -920,6 +1216,538 @@ def calculate_model_curves_mason(freq_model, mason_params):
     # Add dielectric losses (R0 in parallel)
     if 'R0' in mason_params and mason_params['R0'] > 0:
         Y_model += 1.0 / mason_params['R0']
+    
+    g_model = np.real(Y_model) * 1e3  # S -> mS
+    b_model = np.imag(Y_model) * 1e3  # S -> mS
+    y_mag_model = np.abs(Y_model) * 1e3  # mS
+    y_phase_model = np.angle(Y_model, deg=True)  # degrees
+    
+    return {
+        'freq': freq_model * 1e-3,  # Convert to kHz
+        'g': g_model,
+        'b': b_model,
+        'magnitude': y_mag_model,
+        'phase': y_phase_model
+    }
+
+
+def klm_admittance(freq, C0, k_t, Z_a, t, A, Z_load=None, alpha=0.0, R_m=None, R0=None):
+    """
+    Calculate Admittance from KLM (Krimholtz-Leedom-Matthaei) Model
+    
+    KLM model uses a transformer to couple electrical and mechanical parts.
+    It's particularly accurate for hydroacoustic transducers.
+    
+    Args:
+        freq: frequency array (Hz)
+        C0: static capacitance (F)
+        k_t: electromechanical coupling coefficient (thickness mode)
+        Z_a: acoustic impedance (kg/(m²·s)) = ρ·c
+        t: thickness of piezoelectric element (m)
+        A: area of piezoelectric element (m²)
+        Z_load: acoustic load impedance (kg/(m²·s)), optional - default is water (1.5e6)
+        alpha: acoustic attenuation coefficient (Np/m), optional
+        R_m: mechanical loss resistance (Ohm), optional
+        R0: dielectric loss resistance (Ohm), optional
+    
+    Returns:
+        Complex admittance array (S)
+    """
+    omega = 2 * np.pi * freq
+    
+    # Estimate density and sound speed
+    if Z_a < 1e7:
+        rho = 2650  # Ceramics
+    else:
+        rho = 7800  # PZT
+    
+    c = Z_a / rho  # Sound speed
+    
+    # Acoustic load (default to water)
+    if Z_load is None:
+        Z_load = 1.5e6  # Water acoustic impedance (kg/(m²·s))
+    
+    # Wave number with attenuation
+    k = omega / c
+    k_complex = k - 1j * alpha
+    
+    # KLM model parameters
+    # Transformer turns ratio: n = k_t * sqrt(C0 * Z_a / (A * t))
+    n = k_t * np.sqrt(C0 * Z_a / (A * t + 1e-12))
+    
+    # Characteristic impedance of transmission line
+    Z_0 = Z_a * A  # Acoustic impedance scaled by area
+    
+    # Electrical length: beta * l = k * t
+    beta_l = k_complex * t
+    
+    # KLM equivalent circuit admittance
+    beta_l_safe = np.where(np.abs(beta_l) < 1e-10, 1e-10, beta_l)
+    tan_bl = np.tan(beta_l_safe)
+    
+    # Mechanical impedance (transmission line terminated by Z_load)
+    Z_mech_num = Z_load + 1j * Z_0 * tan_bl
+    Z_mech_den = Z_0 + 1j * Z_load * tan_bl
+    Z_mech = Z_0 * Z_mech_num / (Z_mech_den + 1e-12)
+    
+    # Add mechanical losses
+    if R_m is not None and R_m > 0:
+        Z_mech = Z_mech + R_m
+    
+    # Mechanical admittance
+    Y_mech = 1.0 / (Z_mech + 1e-12)
+    
+    # Transform to electrical domain: Y_elec = n² * Y_mech
+    Y_mech_transformed = n**2 * Y_mech
+    
+    # Total electrical admittance
+    Y_klm = 1j * omega * C0 + Y_mech_transformed
+    
+    # Add dielectric losses (R0 in parallel)
+    if R0 is not None and R0 > 0:
+        Y_klm += 1.0 / R0
+    
+    return Y_klm
+
+
+def calculate_klm_parameters(freq_g, g_values_S, freq_b, b_values_S, C0,
+                             t=None, A=None, rho=None, c=None, Z_load=None):
+    """
+    Calculate KLM Model parameters from experimental data
+    
+    KLM model is particularly accurate for hydroacoustic transducers.
+    Uses transformer coupling between electrical and mechanical domains.
+    
+    Args:
+        freq_g: frequency array for conductance (Hz)
+        g_values_S: conductance values (S)
+        freq_b: frequency array for susceptance (Hz)
+        b_values_S: susceptance values (S)
+        C0: static capacitance (F)
+        t: thickness (m), optional
+        A: area (m²), optional
+        rho: density (kg/m³), optional - default ~7800 for PZT
+        c: sound speed (m/s), optional - default ~4000 for PZT
+        Z_load: acoustic load impedance (kg/(m²·s)), optional - default water (1.5e6)
+    
+    Returns:
+        Dictionary with KLM parameters
+    """
+    # Start with MBVD for initial estimates
+    mbvd_params = calculate_mbvd_parameters(freq_g, g_values_S, freq_b, b_values_S, C0)
+    
+    R0 = mbvd_params.get('R0', 1e6)
+    R1 = mbvd_params['R1']
+    L1 = mbvd_params['L1']
+    C1 = mbvd_params['C1']
+    fs_measured = mbvd_params['fs']
+    fp_measured = mbvd_params['fp']
+    k = mbvd_params['k']
+    
+    # Default material properties
+    if rho is None:
+        rho = 7800  # kg/m³ (PZT)
+    if c is None:
+        c = 4000  # m/s (PZT)
+    if Z_load is None:
+        Z_load = 1.5e6  # Water acoustic impedance
+    
+    # Estimate thickness and area
+    if t is None:
+        t = c / (2 * fs_measured)
+    epsilon_r = 2000
+    epsilon_0 = 8.854e-12
+    if A is None:
+        A = C0 * t / (epsilon_r * epsilon_0)
+    
+    # Physical constraints
+    t_min, t_max = 0.1e-3, 50e-3
+    A_min, A_max = 1e-6, 10000e-6
+    t = np.clip(t, t_min, t_max)
+    A = np.clip(A, A_min, A_max)
+    
+    Z_a = rho * c
+    k_t = k
+    
+    # High resolution interpolation (like EBVD)
+    freq_min = max(freq_g.min(), freq_b.min())
+    freq_max = min(freq_g.max(), freq_b.max())
+    n_points = min(2000, max(1000, len(freq_g) * 3))
+    freq_common = np.linspace(freq_min, freq_max, n_points)
+    
+    from scipy.interpolate import interp1d
+    g_interp_func = interp1d(freq_g, g_values_S, kind='cubic', bounds_error=False, fill_value='extrapolate')
+    b_interp_func = interp1d(freq_b, b_values_S, kind='cubic', bounds_error=False, fill_value='extrapolate')
+    g_interp = g_interp_func(freq_common)
+    b_interp = b_interp_func(freq_common)
+    
+    # Adaptive weighting (like EBVD)
+    g_max = np.max(g_interp)
+    g_max_idx = np.argmax(g_interp)
+    fs_approx = freq_common[g_max_idx]
+    
+    freq_distance = np.abs(freq_common - fs_approx)
+    freq_range = freq_max - freq_min
+    resonance_proximity = 1.0 - np.clip(freq_distance / (freq_range * 0.2), 0.0, 1.0)
+    
+    resonance_weight = np.ones_like(g_interp)
+    resonance_weight += 2.0 * resonance_proximity
+    resonance_weight[g_interp > g_max * 0.5] *= 2.0
+    resonance_weight[g_interp > g_max * 0.8] *= 2.0
+    
+    # Store adaptive weights (will be updated in Stage 2)
+    adaptive_weights_g_klm = np.ones_like(freq_common)
+    
+    def klm_error(params, adaptive_weights_g_inner=None):
+        """Calculate normalized error for KLM model - optimized for Mean Relative Error"""
+        k_t_opt, Z_a_opt, t_opt, alpha_opt, R_m_opt = params
+        
+        if (k_t_opt <= 0 or k_t_opt >= 1 or Z_a_opt <= 0 or
+            t_opt < t_min or t_opt > t_max or alpha_opt < 0 or R_m_opt <= 0):
+            return 1e10
+        
+        A_opt = C0 * t_opt / (epsilon_r * epsilon_0)
+        A_opt = np.clip(A_opt, A_min, A_max)
+        
+        Y_model = klm_admittance(freq_common, C0, k_t_opt, Z_a_opt, t_opt, A_opt,
+                                 Z_load, alpha_opt, R_m_opt, R0)
+        g_model = np.real(Y_model)
+        b_model = np.imag(Y_model)
+        
+        # Direct Mean Relative Error minimization (like EBVD)
+        abs_error_g = np.abs(g_model - g_interp)
+        abs_error_b = np.abs(b_model - b_interp)
+        
+        g_magnitude = np.abs(g_interp) + 1e-10
+        b_magnitude = np.abs(b_interp) + 1e-10
+        rel_error_g = abs_error_g / g_magnitude
+        rel_error_b = abs_error_b / b_magnitude
+        
+        # Combine resonance weight with adaptive weight
+        if adaptive_weights_g_inner is not None:
+            combined_weight_g = resonance_weight * adaptive_weights_g_inner
+        else:
+            combined_weight_g = resonance_weight
+        
+        rel_error_g_power = np.abs(rel_error_g) ** 1.5
+        error_g_mean_rel = np.mean(combined_weight_g * rel_error_g_power)
+        error_g_rel_sq = np.mean(combined_weight_g * rel_error_g**2)
+        error_g = 0.9 * error_g_mean_rel + 0.1 * error_g_rel_sq
+        
+        b_typical = np.max(np.abs(b_interp)) + 1e-10
+        error_b = np.mean((abs_error_b / b_typical)**2 + rel_error_b**2)
+        
+        return 30.0 * error_g + error_b
+    
+    # Store for adaptive weighting
+    adaptive_weights_g = np.ones_like(freq_common)
+    
+    # Multi-stage optimization (same as EBVD - 7 stages)
+    initial_params = [k_t, Z_a, t, 0.0, R1]
+    bounds = [
+        (k_t * 0.5, min(0.99, k_t * 1.5)),
+        (Z_a * 0.1, Z_a * 10),
+        (max(t_min, t * 0.1), min(t_max, t * 10)),
+        (0.0, 100.0),
+        (R1 * 0.01, R1 * 100)
+    ]
+    
+    best_result = None
+    best_error = 1e10
+    
+    # Multiple starting points (more variations)
+    initial_guesses = [
+        initial_params,
+        [k_t * 0.8, Z_a, t, 0.0, R1],
+        [k_t * 1.2, Z_a, t, 0.0, R1],
+        [k_t, Z_a * 0.5, t, 0.0, R1],
+        [k_t, Z_a * 2.0, t, 0.0, R1],
+        [k_t, Z_a, t * 0.8, 0.0, R1],
+        [k_t, Z_a, t * 1.2, 0.0, R1],
+        [k_t, Z_a, t, 0.0, R1 * 0.5],
+        [k_t, Z_a, t, 0.0, R1 * 2.0],
+    ]
+    
+    # Stage 1: Initial optimization with multiple starting points
+    for start_params in initial_guesses:
+        try:
+            result = minimize(klm_error, start_params, method='L-BFGS-B', bounds=bounds,
+                            options={'maxiter': 5000, 'ftol': 1e-10, 'gtol': 1e-8})
+            if result.success and result.fun < best_error:
+                best_result = result
+                best_error = result.fun
+        except:
+            continue
+    
+    # Stage 2: Adaptive weighting optimization
+    if best_result is not None:
+        # Evaluate model with best parameters
+        A_temp = np.clip(C0 * best_result.x[2] / (epsilon_r * epsilon_0), A_min, A_max)
+        Y_temp = klm_admittance(freq_common, C0, best_result.x[0], best_result.x[1], best_result.x[2],
+                               A_temp, Z_load, best_result.x[3], best_result.x[4], R0)
+        g_temp = np.real(Y_temp)
+        
+        # Calculate local relative errors
+        rel_error_g_local = np.abs(g_temp - g_interp) / (np.abs(g_interp) + 1e-10)
+        
+        # Create adaptive weights: much higher weight for points with high relative error
+        threshold_g = 0.05  # 5% relative error threshold
+        adaptive_weights_g = np.ones_like(rel_error_g_local)
+        high_error_mask_g = rel_error_g_local > threshold_g
+        adaptive_weights_g[high_error_mask_g] = 1.0 + 9.0 * np.exp(
+            np.clip((rel_error_g_local[high_error_mask_g] - threshold_g) / threshold_g, 0, 2)
+        )
+        
+        # Additional weighting: penalize points with relative error > 7%
+        very_high_error_mask_g = rel_error_g_local > 0.07
+        adaptive_weights_g[very_high_error_mask_g] *= 2.0
+        
+        # Update adaptive weights
+        adaptive_weights_g_klm = adaptive_weights_g.copy()
+        
+        # Create error function with adaptive weights
+        def klm_error_adaptive(params):
+            return klm_error(params, adaptive_weights_g_klm)
+        
+        # Re-optimize with adaptive weights
+        try:
+            result_adaptive = minimize(klm_error_adaptive, best_result.x, method='L-BFGS-B', bounds=bounds,
+                                     options={'maxiter': 3000, 'ftol': 1e-11, 'gtol': 1e-9})
+            if result_adaptive.success and result_adaptive.fun < best_error:
+                best_result = result_adaptive
+                best_error = result_adaptive.fun
+        except:
+            pass
+    
+    # Stage 3: SLSQP refinement
+    if best_result is not None:
+        best_start = best_result.x
+    else:
+        best_start = initial_params
+        
+    try:
+        result2 = minimize(klm_error, best_start, method='SLSQP', bounds=bounds,
+                         options={'maxiter': 5000, 'ftol': 1e-11})
+        if result2.success and result2.fun < best_error:
+            best_result = result2
+            best_error = result2.fun
+    except:
+        pass
+    
+    # Stage 4: Differential evolution for global optimization
+    try:
+        from scipy.optimize import differential_evolution
+        result3 = differential_evolution(klm_error, bounds, seed=42,
+                                       maxiter=500, popsize=40, atol=1e-11, polish=True,
+                                       workers=1, updating='immediate')
+        if result3.success and result3.fun < best_error:
+            best_result = result3
+            best_error = result3.fun
+    except:
+        pass
+    
+    # Stage 5: Iterative refinement with narrowed bounds
+    if best_result is not None:
+        narrowed_bounds = [
+            (max(k_t * 0.5, best_result.x[0] * 0.8), min(0.99, best_result.x[0] * 1.2)),
+            (best_result.x[1] * 0.8, best_result.x[1] * 1.2),
+            (max(t_min, best_result.x[2] * 0.8), min(t_max, best_result.x[2] * 1.2)),
+            (best_result.x[3] * 0.8, min(100.0, best_result.x[3] * 1.2)),
+            (best_result.x[4] * 0.8, best_result.x[4] * 1.2),
+        ]
+        
+        try:
+            result5 = minimize(klm_error, best_result.x, method='L-BFGS-B', bounds=narrowed_bounds,
+                              options={'maxiter': 3000, 'ftol': 1e-13, 'gtol': 1e-11})
+            if result5.success and result5.fun < best_error:
+                best_result = result5
+                best_error = result5.fun
+        except:
+            pass
+        
+        # Final ultra-precise polish
+        try:
+            result6 = minimize(klm_error, best_result.x, method='L-BFGS-B', bounds=bounds,
+                              options={'maxiter': 2000, 'ftol': 1e-14, 'gtol': 1e-12})
+            if result6.success and result6.fun < best_error:
+                best_result = result6
+                best_error = result6.fun
+        except:
+            pass
+    
+    # Stage 6: Direct Mean Relative Error minimization - Conductance only
+    def klm_mre_error_g_only(params):
+        k_t_mre, Z_a_mre, t_mre, alpha_mre, R_m_mre = params
+        if (k_t_mre <= 0 or k_t_mre >= 1 or Z_a_mre <= 0 or
+            t_mre < t_min or t_mre > t_max or alpha_mre < 0 or R_m_mre <= 0):
+            return 1e10
+        
+        A_mre = np.clip(C0 * t_mre / (epsilon_r * epsilon_0), A_min, A_max)
+        Y_mre = klm_admittance(freq_common, C0, k_t_mre, Z_a_mre, t_mre, A_mre,
+                              Z_load, alpha_mre, R_m_mre, R0)
+        g_mre = np.real(Y_mre)
+        rel_error_g_mre = np.abs(g_mre - g_interp) / (np.abs(g_interp) + 1e-10)
+        mre_g = np.mean(rel_error_g_mre)
+        high_error_penalty = np.mean(np.maximum(0, rel_error_g_mre - 0.10)) * 10.0
+        return mre_g + high_error_penalty
+    
+    # Optimize with Conductance-only MRE-focused function (multiple attempts)
+    if best_result is not None:
+        for attempt in range(3):
+            try:
+                if attempt == 0:
+                    start_params = best_result.x
+                elif attempt == 1:
+                    start_params = best_result.x * 1.05
+                else:
+                    start_params = best_result.x * 0.95
+                
+                result7 = minimize(klm_mre_error_g_only, start_params, method='L-BFGS-B', bounds=bounds,
+                                 options={'maxiter': 5000, 'ftol': 1e-13, 'gtol': 1e-11})
+                if result7.success:
+                    A_test = np.clip(C0 * result7.x[2] / (epsilon_r * epsilon_0), A_min, A_max)
+                    Y_test = klm_admittance(freq_common, C0, result7.x[0], result7.x[1], result7.x[2],
+                                           A_test, Z_load, result7.x[3], result7.x[4], R0)
+                    g_test = np.real(Y_test)
+                    mre_test = np.mean(np.abs(g_test - g_interp) / (np.abs(g_interp) + 1e-10))
+                    
+                    A_prev = np.clip(C0 * best_result.x[2] / (epsilon_r * epsilon_0), A_min, A_max)
+                    Y_prev = klm_admittance(freq_common, C0, best_result.x[0], best_result.x[1], best_result.x[2],
+                                           A_prev, Z_load, best_result.x[3], best_result.x[4], R0)
+                    g_prev = np.real(Y_prev)
+                    mre_prev = np.mean(np.abs(g_prev - g_interp) / (np.abs(g_interp) + 1e-10))
+                    
+                    # Also check that Susceptance doesn't degrade too much
+                    b_test = np.imag(Y_test)
+                    b_prev = np.imag(Y_prev)
+                    mre_b_test = np.mean(np.abs(b_test - b_interp) / (np.abs(b_interp) + 1e-10))
+                    mre_b_prev = np.mean(np.abs(b_prev - b_interp) / (np.abs(b_interp) + 1e-10))
+                    
+                    if mre_test < mre_prev and (mre_b_test - mre_b_prev) < 0.005:
+                        best_result = result7
+                        best_error = klm_mre_error_g_only(result7.x)
+                        break
+            except:
+                continue
+    
+    # Stage 7: Final combined optimization with very high weight on Conductance MRE
+    def klm_mre_error_combined(params):
+        k_t_mre, Z_a_mre, t_mre, alpha_mre, R_m_mre = params
+        if (k_t_mre <= 0 or k_t_mre >= 1 or Z_a_mre <= 0 or
+            t_mre < t_min or t_mre > t_max or alpha_mre < 0 or R_m_mre <= 0):
+            return 1e10
+        
+        A_mre = np.clip(C0 * t_mre / (epsilon_r * epsilon_0), A_min, A_max)
+        Y_mre = klm_admittance(freq_common, C0, k_t_mre, Z_a_mre, t_mre, A_mre,
+                              Z_load, alpha_mre, R_m_mre, R0)
+        g_mre = np.real(Y_mre)
+        b_mre = np.imag(Y_mre)
+        
+        # Conductance: Mean Relative Error (direct target)
+        rel_error_g_mre = np.abs(g_mre - g_interp) / (np.abs(g_interp) + 1e-10)
+        mre_g = np.mean(rel_error_g_mre)
+        
+        # Susceptance: regular error (already good)
+        abs_error_b = np.abs(b_mre - b_interp)
+        b_magnitude = np.abs(b_interp) + 1e-10
+        rel_error_b = abs_error_b / b_magnitude
+        b_typical = np.max(np.abs(b_interp)) + 1e-10
+        error_b = np.mean((abs_error_b / b_typical)**2 + rel_error_b**2)
+        
+        # Very high weight on Conductance MRE (100x)
+        return 100.0 * mre_g + error_b
+    
+    # Final optimization with combined function
+    if best_result is not None:
+        try:
+            result8 = minimize(klm_mre_error_combined, best_result.x, method='L-BFGS-B', bounds=bounds,
+                              options={'maxiter': 4000, 'ftol': 1e-13, 'gtol': 1e-11})
+            if result8.success:
+                A_test_final = np.clip(C0 * result8.x[2] / (epsilon_r * epsilon_0), A_min, A_max)
+                Y_test_final = klm_admittance(freq_common, C0, result8.x[0], result8.x[1], result8.x[2],
+                                             A_test_final, Z_load, result8.x[3], result8.x[4], R0)
+                g_test_final = np.real(Y_test_final)
+                mre_final = np.mean(np.abs(g_test_final - g_interp) / (np.abs(g_interp) + 1e-10))
+                
+                A_prev = np.clip(C0 * best_result.x[2] / (epsilon_r * epsilon_0), A_min, A_max)
+                Y_prev = klm_admittance(freq_common, C0, best_result.x[0], best_result.x[1], best_result.x[2],
+                                       A_prev, Z_load, best_result.x[3], best_result.x[4], R0)
+                g_prev = np.real(Y_prev)
+                mre_prev = np.mean(np.abs(g_prev - g_interp) / (np.abs(g_interp) + 1e-10))
+                
+                if mre_final < mre_prev:
+                    best_result = result8
+                    best_error = klm_mre_error_combined(result8.x)
+        except:
+            pass
+    
+    if best_result is not None:
+        k_t_opt, Z_a_opt, t_opt, alpha_opt, R_m_opt = best_result.x
+    else:
+        k_t_opt, Z_a_opt, t_opt, alpha_opt, R_m_opt = k_t, Z_a, t, 0.0, R1
+    
+    A_opt = np.clip(C0 * t_opt / (epsilon_r * epsilon_0), A_min, A_max)
+    
+    # Recalculate frequencies
+    c_opt = Z_a_opt / rho
+    fs_klm = c_opt / (2 * t_opt) if t_opt > 0 else fs_measured
+    fp_klm = fs_klm / np.sqrt(1 - k_t_opt**2) if k_t_opt < 1 else fs_klm * 1.1
+    
+    if 0.8 * fs_measured < fs_klm < 1.2 * fs_measured:
+        fs_measured = fs_klm
+    if fp_klm > fs_measured and 0.8 * fp_measured < fp_klm < 1.5 * fp_measured:
+        fp_measured = fp_klm
+    
+    omega_s = 2 * np.pi * fs_measured
+    Qm = omega_s * L1 / R1 if R1 > 0 else 10.0
+    
+    return {
+        'model_type': 'KLM',
+        'C0': C0,
+        'R0': R0,
+        'k_t': k_t_opt,
+        'Z_a': Z_a_opt,
+        't': t_opt,
+        'A': A_opt,
+        'rho': rho,
+        'c': c_opt,
+        'alpha': alpha_opt,
+        'R_m': R_m_opt,
+        'Z_load': Z_load,
+        'fs': fs_measured,
+        'fp': fp_measured,
+        'R1': R1,
+        'L1': L1,
+        'C1': C1,
+        'Qm': Qm,
+        'k': k_t_opt,
+        'tan_delta': mbvd_params.get('tan_delta', 0.0)
+    }
+
+
+def calculate_model_curves_klm(freq_model, klm_params):
+    """
+    Calculate KLM model curves for plotting
+    
+    Args:
+        freq_model: frequency array for model (Hz)
+        klm_params: dictionary with KLM parameters
+    
+    Returns:
+        Dictionary with model data
+    """
+    Y_model = klm_admittance(
+        freq_model,
+        klm_params['C0'],
+        klm_params['k_t'],
+        klm_params['Z_a'],
+        klm_params['t'],
+        klm_params['A'],
+        klm_params.get('Z_load', 1.5e6),
+        klm_params.get('alpha', 0.0),
+        klm_params.get('R_m', None),
+        klm_params.get('R0', None)
+    )
     
     g_model = np.real(Y_model) * 1e3  # S -> mS
     b_model = np.imag(Y_model) * 1e3  # S -> mS

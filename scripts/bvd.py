@@ -24,7 +24,8 @@ from bvd_model import calculate_bvd_parameters, bvd_admittance, calculate_model_
 from transducer_models import (
     calculate_mbvd_parameters, mbvd_admittance, calculate_model_curves_mbvd,
     calculate_ebvd_parameters, ebvd_admittance, calculate_model_curves_ebvd,
-    calculate_mason_parameters, mason_admittance, calculate_model_curves_mason
+    calculate_mason_parameters, mason_admittance, calculate_model_curves_mason,
+    calculate_klm_parameters, klm_admittance, calculate_model_curves_klm
 )
 
 # Setup logging
@@ -295,6 +296,12 @@ class GraphExtractorApp(QMainWindow):
         # Storage for additional ViewBoxes for real Y range mode
         self.extra_viewboxes = []
         
+        # PDF document storage
+        self.pdf_doc = None  # PyMuPDF document object
+        self.pdf_path = None  # Path to PDF file
+        self.pdf_current_page = 0  # Current page index (0-based)
+        self.pdf_total_pages = 0  # Total number of pages
+        
         self.initUI()
         
     def initUI(self):
@@ -354,16 +361,38 @@ class GraphExtractorApp(QMainWindow):
         
         # Image/PDF loading section
         image_group = QGroupBox("Load from Image/PDF")
-        image_layout = QHBoxLayout()
+        image_layout = QVBoxLayout()
+        
+        # Buttons row
+        buttons_row = QHBoxLayout()
         btn_image = QPushButton("📷 Load Image")
         btn_image.clicked.connect(self.loadImage)
-        image_layout.addWidget(btn_image)
+        buttons_row.addWidget(btn_image)
         
         if PDF_AVAILABLE:
             btn_pdf = QPushButton("📄 Load PDF")
             btn_pdf.clicked.connect(lambda: self.loadPDFFromButton())
-            image_layout.addWidget(btn_pdf)
-        image_layout.addStretch()
+            buttons_row.addWidget(btn_pdf)
+        buttons_row.addStretch()
+        image_layout.addLayout(buttons_row)
+        
+        # PDF page selection (only visible when PDF is loaded)
+        if PDF_AVAILABLE:
+            pdf_page_layout = QHBoxLayout()
+            pdf_page_layout.addWidget(QLabel("PDF Page:"))
+            self.pdf_page_spinbox = QSpinBox()
+            self.pdf_page_spinbox.setMinimum(1)
+            self.pdf_page_spinbox.setMaximum(1)
+            self.pdf_page_spinbox.setValue(1)
+            self.pdf_page_spinbox.setEnabled(False)  # Disabled until PDF is loaded
+            self.pdf_page_spinbox.setToolTip("Select page number from PDF document")
+            self.pdf_page_spinbox.valueChanged.connect(self.onPDFPageChanged)
+            pdf_page_layout.addWidget(self.pdf_page_spinbox)
+            self.pdf_page_total_label = QLabel("of 1")
+            pdf_page_layout.addWidget(self.pdf_page_total_label)
+            pdf_page_layout.addStretch()
+            image_layout.addLayout(pdf_page_layout)
+        
         image_group.setLayout(image_layout)
         btn_layout.addWidget(image_group)
         
@@ -444,14 +473,16 @@ class GraphExtractorApp(QMainWindow):
             "BVD (Basic)",
             "MBVD (Modified BVD - Recommended)",
             "EBVD (Extended BVD with Harmonics)",
-            "Mason (Physical Model - Advanced)"
+            "Mason (Physical Model - Advanced)",
+            "KLM (Krimholtz-Leedom-Matthaei - Hydroacoustic)"
         ])
         self.model_type_combo.setCurrentIndex(1)  # Default to MBVD
         self.model_type_combo.setToolTip(
             "BVD: Basic 4-parameter model (C0, R1, L1, C1)\n"
             "MBVD: Modified BVD with dielectric losses (R0) - usually more accurate\n"
             "EBVD: Extended BVD with harmonic branches (R2, L2, C2) - best for complex resonances\n"
-            "Mason: Physical model based on acoustic waves - for ultrasonic transducers\n\n"
+            "Mason: Physical model based on acoustic waves - for ultrasonic transducers\n"
+            "KLM: Transformer-coupled model - particularly accurate for hydroacoustic transducers\n\n"
             "The model will be fitted to your experimental data using optimization."
         )
         combo_layout.addWidget(self.model_type_combo)
@@ -665,9 +696,54 @@ class GraphExtractorApp(QMainWindow):
             use_mbvd = "MBVD" in model_type
             use_ebvd = "EBVD" in model_type
             use_mason = "Mason" in model_type
+            use_klm = "KLM" in model_type
             
             # Calculate parameters using selected model
-            if use_mason:
+            if use_klm:
+                logger.info("Starting KLM (Krimholtz-Leedom-Matthaei) parameter calculation...")
+                logger.info(f"Input parameters: C0={C0_nF} nF, fs={fs_kHz} kHz (initial)")
+                logger.info(f"Conductance data: {len(g_values)} points, range: {g_values.min():.4f} - {g_values.max():.4f} mS")
+                logger.info(f"Susceptance data: {len(b_values)} points, range: {b_values.min():.4f} - {b_values.max():.4f} mS")
+                
+                self.bvd_params = calculate_klm_parameters(
+                    freq_g, g_values_S, freq_b, b_values_S, C0
+                )
+                self.bvd_params['model_type'] = 'KLM'
+                
+                logger.info("KLM parameter calculation completed successfully")
+                logger.info(f"Calculated KLM parameters: k_t={self.bvd_params.get('k_t', 0):.4f}, t={self.bvd_params.get('t', 0)*1e3:.4f} mm")
+                logger.info(f"Physical parameters: Z_a={self.bvd_params.get('Z_a', 0):.2e} kg/(m²·s), A={self.bvd_params.get('A', 0)*1e6:.4f} mm²")
+                logger.info(f"Acoustic load: Z_load={self.bvd_params.get('Z_load', 0):.2e} kg/(m²·s)")
+                
+                # Update group title
+                self.params_group.setTitle("Calculated KLM Model Parameters")
+                
+                # Update table for KLM (physical parameters similar to Mason)
+                param_data = [
+                    ('C₀', f"{self.bvd_params['C0']*1e9:.2f}", 'nF'),
+                    ('R₀', f"{self.bvd_params.get('R0', 0):.2f}", 'Ohm'),
+                    ('R_m', f"{self.bvd_params.get('R_m', 0):.2f}", 'Ohm'),
+                    ('k_t', f"{self.bvd_params.get('k_t', 0):.4f}", ''),
+                    ('Z_a', f"{self.bvd_params.get('Z_a', 0):.2e}", 'kg/(m²·s)'),
+                    ('Z_load', f"{self.bvd_params.get('Z_load', 0):.2e}", 'kg/(m²·s)'),
+                    ('t', f"{self.bvd_params.get('t', 0)*1e3:.4f}", 'mm'),
+                    ('A', f"{self.bvd_params.get('A', 0)*1e6:.4f}", 'mm²'),
+                    ('ρ', f"{self.bvd_params.get('rho', 0):.0f}", 'kg/m³'),
+                    ('c', f"{self.bvd_params.get('c', 0):.0f}", 'm/s'),
+                    ('α', f"{self.bvd_params.get('alpha', 0):.4f}", 'Np/m'),
+                    ('fs', f"{self.bvd_params['fs']*1e-3:.4f}", 'kHz'),
+                    ('fp', f"{self.bvd_params['fp']*1e-3:.4f}", 'kHz'),
+                    ('Qm', f"{self.bvd_params['Qm']:.2f}", ''),
+                    ('k', f"{self.bvd_params['k']:.4f}", ''),
+                    ('tan δ', f"{self.bvd_params.get('tan_delta', 0.0):.6f}", '')
+                ]
+                
+                self.bvd_params_table.setRowCount(len(param_data))
+                for i, (name, val, unit) in enumerate(param_data):
+                    self.bvd_params_table.setItem(i, 0, QTableWidgetItem(name))
+                    self.bvd_params_table.setItem(i, 1, QTableWidgetItem(val))
+                    self.bvd_params_table.setItem(i, 2, QTableWidgetItem(unit))
+            elif use_mason:
                 logger.info("Starting Mason (Physical Model) parameter calculation...")
                 logger.info(f"Input parameters: C0={C0_nF} nF, fs={fs_kHz} kHz (initial)")
                 logger.info(f"Conductance data: {len(g_values)} points, range: {g_values.min():.4f} - {g_values.max():.4f} mS")
@@ -829,7 +905,9 @@ class GraphExtractorApp(QMainWindow):
                     self.bvd_params_table.setItem(i, 2, QTableWidgetItem(unit))
             
             # Log model creation
-            if use_mason:
+            if use_klm:
+                model_name = "KLM"
+            elif use_mason:
                 model_name = "Mason"
             elif use_ebvd:
                 model_name = "EBVD"
@@ -839,7 +917,10 @@ class GraphExtractorApp(QMainWindow):
                 model_name = "BVD"
             logger.info(f"=== {model_name} Model Created Successfully ===")
             logger.info(f"Model type: {self.bvd_params.get('model_type', 'BVD')}")
-            if use_mason:
+            if use_klm:
+                logger.info(f"KLM model: k_t={self.bvd_params.get('k_t', 0):.4f}, t={self.bvd_params.get('t', 0)*1e3:.4f} mm")
+                logger.info(f"KLM acoustic load: Z_load={self.bvd_params.get('Z_load', 0):.2e} kg/(m²·s)")
+            elif use_mason:
                 logger.info(f"Mason model: k_t={self.bvd_params.get('k_t', 0):.4f}, t={self.bvd_params.get('t', 0)*1e3:.4f} mm")
             elif use_ebvd:
                 logger.info(f"EBVD model: R0={self.bvd_params.get('R0', 0):.2f} Ohm, R1={self.bvd_params.get('R1', 0):.2f} Ohm")
@@ -860,7 +941,8 @@ class GraphExtractorApp(QMainWindow):
                 'BVD': 'Basic BVD (4 parameters)',
                 'MBVD': 'Modified BVD with dielectric losses (5 parameters)',
                 'EBVD': 'Extended BVD with harmonic branches (7+ parameters)',
-                'Mason': 'Physical model based on acoustic waves (physical parameters)'
+                'Mason': 'Physical model based on acoustic waves (physical parameters)',
+                'KLM': 'Transformer-coupled model for hydroacoustic transducers (physical parameters)'
             }
             desc = model_desc.get(self.bvd_params.get('model_type', 'BVD'), model_name)
             QMessageBox.information(
@@ -894,7 +976,11 @@ class GraphExtractorApp(QMainWindow):
         model_type = self.bvd_params.get('model_type', 'BVD')
         logger.info(f"Plotting model curves using {model_type} model")
         
-        if model_type == 'Mason':
+        if model_type == 'KLM':
+            logger.info(f"Using KLM model with k_t={self.bvd_params.get('k_t', 0):.4f}, t={self.bvd_params.get('t', 0)*1e3:.4f} mm")
+            logger.info(f"KLM acoustic load: Z_load={self.bvd_params.get('Z_load', 0):.2e} kg/(m²·s)")
+            model_curves = calculate_model_curves_klm(freq_model, self.bvd_params)
+        elif model_type == 'Mason':
             logger.info(f"Using Mason model with k_t={self.bvd_params.get('k_t', 0):.4f}, t={self.bvd_params.get('t', 0)*1e3:.4f} mm")
             model_curves = calculate_model_curves_mason(freq_model, self.bvd_params)
         elif model_type == 'EBVD':
@@ -1671,9 +1757,19 @@ class GraphExtractorApp(QMainWindow):
     
     def loadImageFile(self, filename):
         """Load image"""
-        pixmap = QPixmap(filename)
-    def loadImageFile(self, filename):
-        """Load image"""
+        # Close PDF if open
+        if self.pdf_doc is not None:
+            self.pdf_doc.close()
+            self.pdf_doc = None
+            self.pdf_path = None
+            # Disable PDF page selection
+            if PDF_AVAILABLE and hasattr(self, 'pdf_page_spinbox'):
+                self.pdf_page_spinbox.setEnabled(False)
+                self.pdf_page_spinbox.setMaximum(1)
+                self.pdf_page_spinbox.setValue(1)
+                if hasattr(self, 'pdf_page_total_label'):
+                    self.pdf_page_total_label.setText("of 1")
+        
         pixmap = QPixmap(filename)
         self.preview_label.setPixmap(pixmap.scaled(
             self.preview_label.size(),
@@ -1710,23 +1806,60 @@ class GraphExtractorApp(QMainWindow):
             return
         
         try:
-            doc = fitz.open(filename)
+            # Close previous PDF if open
+            if self.pdf_doc is not None:
+                self.pdf_doc.close()
             
-            # If PDF has more than one page, let user choose
-            page_num = 0
-            if len(doc) > 1:
+            # Open new PDF document
+            self.pdf_doc = fitz.open(filename)
+            self.pdf_path = filename
+            self.pdf_total_pages = len(self.pdf_doc)
+            
+            # Set initial page
+            if self.pdf_total_pages > 1:
                 from PyQt6.QtWidgets import QInputDialog
                 page_num, ok = QInputDialog.getInt(
                     self, "Page Selection", 
-                    f"Document contains {len(doc)} pages.\nSelect page to load:",
-                    1, 1, len(doc), 1
+                    f"Document contains {self.pdf_total_pages} pages.\nSelect page to load:",
+                    1, 1, self.pdf_total_pages, 1
                 )
                 if not ok:
-                    doc.close()
+                    self.pdf_doc.close()
+                    self.pdf_doc = None
+                    self.pdf_path = None
                     return
-                page_num -= 1  # Convert to 0-index
+                self.pdf_current_page = page_num - 1  # Convert to 0-index
+            else:
+                self.pdf_current_page = 0
             
-            page = doc[page_num]
+            # Update page selection UI
+            if PDF_AVAILABLE and hasattr(self, 'pdf_page_spinbox'):
+                self.pdf_page_spinbox.setMaximum(self.pdf_total_pages)
+                self.pdf_page_spinbox.setValue(self.pdf_current_page + 1)
+                self.pdf_page_spinbox.setEnabled(True)
+                self.pdf_page_total_label.setText(f"of {self.pdf_total_pages}")
+            
+            # Load the selected page
+            self.loadPDFPage(self.pdf_current_page, zoom_factor)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load PDF: {e}")
+            if self.pdf_doc is not None:
+                self.pdf_doc.close()
+                self.pdf_doc = None
+                self.pdf_path = None
+    
+    def loadPDFPage(self, page_index, zoom_factor=3.0):
+        """Load a specific page from the currently open PDF"""
+        if not PDF_AVAILABLE or self.pdf_doc is None:
+            return
+        
+        try:
+            if page_index < 0 or page_index >= self.pdf_total_pages:
+                return
+            
+            self.pdf_current_page = page_index
+            page = self.pdf_doc[page_index]
             
             # Convert to high resolution image
             mat = fitz.Matrix(zoom_factor, zoom_factor)  # Adjustable scale for better quality
@@ -1737,21 +1870,49 @@ class GraphExtractorApp(QMainWindow):
             qimg = QImage.fromData(img_data)
             pixmap = QPixmap.fromImage(qimg)
             
+            # Update preview
             self.preview_label.setPixmap(pixmap.scaled(
                 self.preview_label.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             ))
             
+            # Update calibration and extraction images
             self.calib_image.setImage(pixmap)
             self.extract_image.setImage(pixmap)
             
-            self.tabs.setTabEnabled(1, True)
-            self.tabs.setCurrentIndex(1)
+            # Clear previous calibration and data points when switching pages
+            self.coord_points = []
+            self.data_points = []
+            self.calibration = None
+            self.extracted_data = []
+            self.all_functions = []
             
-            doc.close()
+            # Enable tabs
+            self.tabs.setTabEnabled(1, True)
+            self.tabs.setTabEnabled(2, False)
+            self.tabs.setTabEnabled(3, False)
+            self.tabs.setTabEnabled(4, False)
+            
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load PDF: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to load PDF page: {e}")
+    
+    def onPDFPageChanged(self, page_num):
+        """Handle PDF page selection change"""
+        if self.pdf_doc is None:
+            return
+        
+        page_index = page_num - 1  # Convert from 1-based to 0-based
+        if page_index == self.pdf_current_page:
+            return  # Already on this page
+        
+        try:
+            zoom = float(self.pdf_zoom_input.text()) if hasattr(self, 'pdf_zoom_input') else 3.0
+            zoom = max(1.0, min(5.0, zoom))  # Limit 1.0-5.0
+        except:
+            zoom = 3.0
+        
+        self.loadPDFPage(page_index, zoom)
     
     def loadPDFFromButton(self):
         """Load PDF via button with adjustable zoom"""
@@ -2161,6 +2322,10 @@ class GraphExtractorApp(QMainWindow):
         if ok and new_name:
             self.all_functions[current_row]['name'] = new_name
             self.showResults()
+            
+            # Update BVD assignment lists to reflect new name
+            # This will preserve the selection based on bvd_type
+            self.updateBVDAssignmentLists()
     
     def deleteFunction(self):
         """Delete selected function"""
