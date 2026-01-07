@@ -366,25 +366,68 @@ def calculate_ebvd_parameters(freq_g, g_values_S, freq_b, b_values_S, C0, use_ha
     fs_harmonic = fs_measured * 2.0  # First harmonic typically at 2x fundamental
     
     # Initial harmonic parameters (scaled from fundamental)
-    R2_init = R1 * 2.0  # Harmonic typically has higher resistance
-    C2_init = C1 * 0.25  # Harmonic capacitance typically smaller
+    R2_init = R1 * 2.0  # First harmonic typically has higher resistance
+    C2_init = C1 * 0.25  # First harmonic capacitance typically smaller
     L2_init = 1.0 / (4 * np.pi**2 * fs_harmonic**2 * C2_init)
     
-    # Optimize parameters
+    # High resolution interpolation for better optimization (like improved MBVD/EBVD)
     freq_min = max(freq_g.min(), freq_b.min())
     freq_max = min(freq_g.max(), freq_b.max())
-    freq_common = np.linspace(freq_min, freq_max, min(500, len(freq_g)))
+    # Use cubic spline interpolation for smoother data
+    from scipy.interpolate import interp1d
+    num_points = min(1000, max(len(freq_g), len(freq_b)) * 2)
+    freq_common = np.linspace(freq_min, freq_max, num_points)
     
-    g_interp = np.interp(freq_common, freq_g, g_values_S)
-    b_interp = np.interp(freq_common, freq_b, b_values_S)
+    # Use cubic interpolation for smoother curves
+    if len(freq_g) > 3:
+        g_interp_func = interp1d(freq_g, g_values_S, kind='cubic', bounds_error=False, fill_value='extrapolate')
+        g_interp = g_interp_func(freq_common)
+    else:
+        g_interp = np.interp(freq_common, freq_g, g_values_S)
     
-    # Find resonance region for weighting
+    if len(freq_b) > 3:
+        b_interp_func = interp1d(freq_b, b_values_S, kind='cubic', bounds_error=False, fill_value='extrapolate')
+        b_interp = b_interp_func(freq_common)
+    else:
+        b_interp = np.interp(freq_common, freq_b, b_values_S)
+    
+    # Enhanced resonance weighting (like improved MBVD)
     g_max = np.max(g_interp)
-    g_threshold = g_max * 0.5
-    resonance_weight = np.where(g_interp > g_threshold, 3.0, 1.0)
+    g_min = np.min(g_interp)
+    g_range = g_max - g_min if g_max > g_min else 1.0
     
-    def ebvd_error(params):
-        """Calculate normalized error between EBVD model and experimental data"""
+    # Find peaks for better harmonic detection
+    try:
+        from scipy.signal import find_peaks
+        # Use higher resolution for peak detection
+        freq_peaks = np.linspace(freq_min, freq_max, min(2000, len(freq_g) * 10))
+        if len(freq_g) > 3:
+            g_peaks_func = interp1d(freq_g, g_values_S, kind='cubic', bounds_error=False, fill_value='extrapolate')
+            g_peaks = g_peaks_func(freq_peaks)
+        else:
+            g_peaks = np.interp(freq_peaks, freq_g, g_values_S)
+        
+        peaks, properties = find_peaks(g_peaks, height=g_max * 0.3, distance=len(freq_peaks) // 20)
+        peak_freqs = freq_peaks[peaks] if len(peaks) > 0 else [fs_measured]
+    except:
+        peak_freqs = [fs_measured]
+    
+    # Enhanced resonance weighting
+    resonance_weight = np.ones_like(freq_common)
+    for peak_freq in peak_freqs:
+        freq_distance = np.abs(freq_common - peak_freq)
+        freq_range = freq_max - freq_min
+        resonance_proximity = 1.0 - np.clip(freq_distance / (freq_range * 0.2), 0.0, 1.0)
+        resonance_weight += 2.0 * resonance_proximity
+    
+    resonance_weight[g_interp > g_max * 0.5] *= 2.0
+    resonance_weight[g_interp > g_max * 0.8] *= 2.0
+    
+    # Store adaptive weights (will be updated in Stage 2)
+    adaptive_weights_g_ebvd = np.ones_like(freq_common)
+    
+    def ebvd_error(params, adaptive_weights_g_inner=None):
+        """Calculate normalized error for EBVD model - optimized for Mean Relative Error"""
         R0_opt, R1_opt, L1_opt, C1_opt, R2_opt, L2_opt, C2_opt = params
         
         if (R0_opt <= 0 or R1_opt <= 0 or L1_opt <= 0 or C1_opt <= 0 or
@@ -396,7 +439,7 @@ def calculate_ebvd_parameters(freq_g, g_values_S, freq_b, b_values_S, C0, use_ha
         g_model = np.real(Y_model)
         b_model = np.imag(Y_model)
         
-        # Use combination of absolute and relative errors
+        # Direct Mean Relative Error minimization (like improved MBVD/EBVD)
         abs_error_g = np.abs(g_model - g_interp)
         abs_error_b = np.abs(b_model - b_interp)
         
@@ -405,64 +448,273 @@ def calculate_ebvd_parameters(freq_g, g_values_S, freq_b, b_values_S, C0, use_ha
         rel_error_g = abs_error_g / g_magnitude
         rel_error_b = abs_error_b / b_magnitude
         
-        g_typical = np.max(g_interp) + 1e-10
+        # Combine resonance weight with adaptive weight
+        if adaptive_weights_g_inner is not None:
+            combined_weight_g = resonance_weight * adaptive_weights_g_inner
+        else:
+            combined_weight_g = resonance_weight
+        
+        rel_error_g_power = np.abs(rel_error_g) ** 1.5
+        error_g_mean_rel = np.mean(combined_weight_g * rel_error_g_power)
+        error_g_rel_sq = np.mean(combined_weight_g * rel_error_g**2)
+        error_g = 0.8 * error_g_mean_rel + 0.2 * error_g_rel_sq
+        
         b_typical = np.max(np.abs(b_interp)) + 1e-10
+        error_b = np.mean((abs_error_b / b_typical)**2 + rel_error_b**2)
         
-        # Weighted errors (resonance region gets 3x weight)
-        error_g = np.sum(resonance_weight * (0.5 * (abs_error_g / g_typical)**2 + 0.5 * rel_error_g**2))
-        error_b = np.sum((abs_error_b / b_typical)**2 + rel_error_b**2)
-        
-        return 5.0 * error_g + error_b
+        return 20.0 * error_g + error_b
     
-    try:
-        initial_params = [R0, R1, L1, C1, R2_init, L2_init, C2_init]
-        bounds = [
-            (R0 * 0.1, R0 * 1000),
-            (R1 * 0.01, R1 * 100),
-            (L1 * 0.01, L1 * 100),
-            (C1 * 0.01, C1 * 100),
-            (R2_init * 0.01, R2_init * 100),
-            (L2_init * 0.01, L2_init * 100),
-            (C2_init * 0.01, C2_init * 100)
-        ]
-        
-        # Try multiple optimization methods
-        best_result = None
-        best_error = 1e10
-        
-        # Try L-BFGS-B
+    # Multi-stage optimization (same as improved MBVD/Mason/KLM - 7 stages)
+    initial_params = [R0, R1, L1, C1, R2_init, L2_init, C2_init]
+    bounds = [
+        (R0 * 0.1, R0 * 1000),
+        (R1 * 0.01, R1 * 100),
+        (L1 * 0.01, L1 * 100),
+        (C1 * 0.01, C1 * 100),
+        (R2_init * 0.01, R2_init * 100),
+        (L2_init * 0.01, L2_init * 100),
+        (C2_init * 0.01, C2_init * 100)
+    ]
+    
+    best_result = None
+    best_error = 1e10
+    
+    # Multiple starting points (more variations)
+    initial_guesses = [
+        initial_params,
+        [R0 * 0.8, R1, L1, C1, R2_init, L2_init, C2_init],
+        [R0 * 1.2, R1, L1, C1, R2_init, L2_init, C2_init],
+        [R0, R1 * 0.5, L1, C1, R2_init, L2_init, C2_init],
+        [R0, R1 * 2.0, L1, C1, R2_init, L2_init, C2_init],
+        [R0, R1, L1 * 0.8, C1, R2_init, L2_init, C2_init],
+        [R0, R1, L1 * 1.2, C1, R2_init, L2_init, C2_init],
+        [R0, R1, L1, C1 * 0.8, R2_init, L2_init, C2_init],
+        [R0, R1, L1, C1 * 1.2, R2_init, L2_init, C2_init],
+        [R0, R1, L1, C1, R2_init * 0.5, L2_init, C2_init],
+        [R0, R1, L1, C1, R2_init * 2.0, L2_init, C2_init],
+    ]
+    
+    # Stage 1: Initial optimization with multiple starting points
+    for start_params in initial_guesses:
         try:
-            result = minimize(ebvd_error, initial_params, method='L-BFGS-B', bounds=bounds,
-                            options={'maxiter': 2000, 'ftol': 1e-8})
+            result = minimize(ebvd_error, start_params, method='L-BFGS-B', bounds=bounds,
+                            options={'maxiter': 5000, 'ftol': 1e-10, 'gtol': 1e-8})
             if result.success and result.fun < best_error:
                 best_result = result
                 best_error = result.fun
         except:
-            pass
+            continue
+    
+    # Stage 2: Adaptive weighting optimization
+    if best_result is not None:
+        # Evaluate model with best parameters
+        A_temp = best_result.x
+        Y_temp = ebvd_admittance(freq_common, C0, A_temp[1], A_temp[2], A_temp[3],
+                                 A_temp[4], A_temp[5], A_temp[6])
+        g_temp = np.real(Y_temp)
         
-        # Try SLSQP
+        # Calculate local relative errors
+        rel_error_g_local = np.abs(g_temp - g_interp) / (np.abs(g_interp) + 1e-10)
+        
+        # Create adaptive weights: much higher weight for points with high relative error
+        threshold_g = 0.05  # 5% relative error threshold
+        adaptive_weights_g = np.ones_like(rel_error_g_local)
+        high_error_mask_g = rel_error_g_local > threshold_g
+        adaptive_weights_g[high_error_mask_g] = 1.0 + 9.0 * np.exp(
+            np.clip((rel_error_g_local[high_error_mask_g] - threshold_g) / threshold_g, 0, 2)
+        )
+        
+        # Additional weighting: penalize points with relative error > 7%
+        very_high_error_mask_g = rel_error_g_local > 0.07
+        adaptive_weights_g[very_high_error_mask_g] *= 2.0
+        
+        # Update adaptive weights
+        adaptive_weights_g_ebvd = adaptive_weights_g.copy()
+        
+        # Create error function with adaptive weights
+        def ebvd_error_adaptive(params):
+            return ebvd_error(params, adaptive_weights_g_ebvd)
+        
+        # Re-optimize with adaptive weights
         try:
-            result2 = minimize(ebvd_error, initial_params, method='SLSQP', bounds=bounds,
-                             options={'maxiter': 2000, 'ftol': 1e-8})
-            if result2.success and result2.fun < best_error:
-                best_result = result2
-                best_error = result2.fun
+            result_adaptive = minimize(ebvd_error_adaptive, best_result.x, method='L-BFGS-B', bounds=bounds,
+                                     options={'maxiter': 3000, 'ftol': 1e-11, 'gtol': 1e-9})
+            if result_adaptive.success and result_adaptive.fun < best_error:
+                best_result = result_adaptive
+                best_error = result_adaptive.fun
+        except:
+            pass
+    
+    # Stage 3: SLSQP refinement
+    if best_result is not None:
+        best_start = best_result.x
+    else:
+        best_start = initial_params
+        
+    try:
+        result2 = minimize(ebvd_error, best_start, method='SLSQP', bounds=bounds,
+                         options={'maxiter': 5000, 'ftol': 1e-11})
+        if result2.success and result2.fun < best_error:
+            best_result = result2
+            best_error = result2.fun
+    except:
+        pass
+    
+    # Stage 4: Differential evolution for global optimization
+    try:
+        from scipy.optimize import differential_evolution
+        result3 = differential_evolution(ebvd_error, bounds, seed=42,
+                                       maxiter=500, popsize=40, atol=1e-11, polish=True,
+                                       workers=1, updating='immediate')
+        if result3.success and result3.fun < best_error:
+            best_result = result3
+            best_error = result3.fun
+    except:
+        pass
+    
+    # Stage 5: Iterative refinement with narrowed bounds
+    if best_result is not None:
+        narrowed_bounds = [
+            (best_result.x[0] * 0.8, best_result.x[0] * 1.2),
+            (best_result.x[1] * 0.8, best_result.x[1] * 1.2),
+            (best_result.x[2] * 0.8, best_result.x[2] * 1.2),
+            (best_result.x[3] * 0.8, best_result.x[3] * 1.2),
+            (best_result.x[4] * 0.8, best_result.x[4] * 1.2),
+            (best_result.x[5] * 0.8, best_result.x[5] * 1.2),
+            (best_result.x[6] * 0.8, best_result.x[6] * 1.2),
+        ]
+        
+        try:
+            result5 = minimize(ebvd_error, best_result.x, method='L-BFGS-B', bounds=narrowed_bounds,
+                              options={'maxiter': 3000, 'ftol': 1e-13, 'gtol': 1e-11})
+            if result5.success and result5.fun < best_error:
+                best_result = result5
+                best_error = result5.fun
         except:
             pass
         
-        if best_result is not None:
-            R0, R1, L1, C1, R2, L2, C2 = best_result.x
-        else:
-            # Fallback to initial values
-            R2, L2, C2 = R2_init, L2_init, C2_init
-    except Exception:
+        # Final ultra-precise polish
+        try:
+            result6 = minimize(ebvd_error, best_result.x, method='L-BFGS-B', bounds=bounds,
+                              options={'maxiter': 2000, 'ftol': 1e-14, 'gtol': 1e-12})
+            if result6.success and result6.fun < best_error:
+                best_result = result6
+                best_error = result6.fun
+        except:
+            pass
+    
+    # Stage 6: Direct Mean Relative Error minimization - Conductance only
+    def ebvd_mre_error_g_only(params):
+        R0_mre, R1_mre, L1_mre, C1_mre, R2_mre, L2_mre, C2_mre = params
+        if (R0_mre <= 0 or R1_mre <= 0 or L1_mre <= 0 or C1_mre <= 0 or
+            R2_mre <= 0 or L2_mre <= 0 or C2_mre <= 0):
+            return 1e10
+        
+        Y_mre = ebvd_admittance(freq_common, C0, R1_mre, L1_mre, C1_mre,
+                                R2_mre, L2_mre, C2_mre)
+        g_mre = np.real(Y_mre)
+        rel_error_g_mre = np.abs(g_mre - g_interp) / (np.abs(g_interp) + 1e-10)
+        mre_g = np.mean(rel_error_g_mre)
+        high_error_penalty = np.mean(np.maximum(0, rel_error_g_mre - 0.10)) * 10.0
+        return mre_g + high_error_penalty
+    
+    # Optimize with Conductance-only MRE-focused function (multiple attempts)
+    if best_result is not None:
+        for attempt in range(3):
+            try:
+                if attempt == 0:
+                    start_mre = best_result.x
+                elif attempt == 1:
+                    start_mre = best_result.x * 1.05
+                else:
+                    start_mre = best_result.x * 0.95
+                
+                result7 = minimize(ebvd_mre_error_g_only, start_mre, method='L-BFGS-B', bounds=bounds,
+                                 options={'maxiter': 5000, 'ftol': 1e-13, 'gtol': 1e-11})
+                if result7.success:
+                    Y_test = ebvd_admittance(freq_common, C0, result7.x[1], result7.x[2], result7.x[3],
+                                            result7.x[4], result7.x[5], result7.x[6])
+                    g_test = np.real(Y_test)
+                    mre_test = np.mean(np.abs(g_test - g_interp) / (np.abs(g_interp) + 1e-10))
+                    
+                    Y_prev = ebvd_admittance(freq_common, C0, best_result.x[1], best_result.x[2], best_result.x[3],
+                                            best_result.x[4], best_result.x[5], best_result.x[6])
+                    g_prev = np.real(Y_prev)
+                    mre_prev = np.mean(np.abs(g_prev - g_interp) / (np.abs(g_interp) + 1e-10))
+                    
+                    # Also check that Susceptance doesn't degrade too much
+                    b_test = np.imag(Y_test)
+                    b_prev = np.imag(Y_prev)
+                    mre_b_test = np.mean(np.abs(b_test - b_interp) / (np.abs(b_interp) + 1e-10))
+                    mre_b_prev = np.mean(np.abs(b_prev - b_interp) / (np.abs(b_interp) + 1e-10))
+                    
+                    if mre_test < mre_prev and (mre_b_test - mre_b_prev) < 0.005:
+                        best_result = result7
+                        best_error = ebvd_mre_error_g_only(result7.x)
+                        break
+            except:
+                continue
+    
+    # Stage 7: Final combined optimization with very high weight on Conductance MRE
+    def ebvd_mre_error_combined(params):
+        R0_mre, R1_mre, L1_mre, C1_mre, R2_mre, L2_mre, C2_mre = params
+        if (R0_mre <= 0 or R1_mre <= 0 or L1_mre <= 0 or C1_mre <= 0 or
+            R2_mre <= 0 or L2_mre <= 0 or C2_mre <= 0):
+            return 1e10
+        
+        Y_mre = ebvd_admittance(freq_common, C0, R1_mre, L1_mre, C1_mre,
+                                R2_mre, L2_mre, C2_mre)
+        g_mre = np.real(Y_mre)
+        b_mre = np.imag(Y_mre)
+        
+        # Conductance: Mean Relative Error (direct target)
+        rel_error_g_mre = np.abs(g_mre - g_interp) / (np.abs(g_interp) + 1e-10)
+        mre_g = np.mean(rel_error_g_mre)
+        
+        # Susceptance: regular error (already good)
+        abs_error_b = np.abs(b_mre - b_interp)
+        b_magnitude = np.abs(b_interp) + 1e-10
+        rel_error_b = abs_error_b / b_magnitude
+        b_typical = np.max(np.abs(b_interp)) + 1e-10
+        error_b = np.mean((abs_error_b / b_typical)**2 + rel_error_b**2)
+        
+        # Very high weight on Conductance MRE (100x)
+        return 100.0 * mre_g + error_b
+    
+    # Final optimization with combined function
+    if best_result is not None:
+        try:
+            result8 = minimize(ebvd_mre_error_combined, best_result.x, method='L-BFGS-B', bounds=bounds,
+                              options={'maxiter': 4000, 'ftol': 1e-13, 'gtol': 1e-11})
+            if result8.success:
+                Y_test_final = ebvd_admittance(freq_common, C0, result8.x[1], result8.x[2], result8.x[3],
+                                              result8.x[4], result8.x[5], result8.x[6])
+                g_test_final = np.real(Y_test_final)
+                mre_final = np.mean(np.abs(g_test_final - g_interp) / (np.abs(g_interp) + 1e-10))
+                
+                Y_prev = ebvd_admittance(freq_common, C0, best_result.x[1], best_result.x[2], best_result.x[3],
+                                        best_result.x[4], best_result.x[5], best_result.x[6])
+                g_prev = np.real(Y_prev)
+                mre_prev = np.mean(np.abs(g_prev - g_interp) / (np.abs(g_interp) + 1e-10))
+                
+                if mre_final < mre_prev:
+                    best_result = result8
+                    best_error = ebvd_mre_error_combined(result8.x)
+        except:
+            pass
+    
+    if best_result is not None:
+        R0, R1, L1, C1, R2, L2, C2 = best_result.x
+    else:
+        # Fallback to initial values
         R2, L2, C2 = R2_init, L2_init, C2_init
     
     # Recalculate frequencies
     fs_optimized = 1.0 / (2 * np.pi * np.sqrt(L1 * C1))
     
     freq_test = np.linspace(fs_optimized, fs_optimized * 1.5, 1000)
-    Y_test = ebvd_admittance(freq_test, C0, R1, L1, C1, R2, L2, C2)
+    Y_test = ebvd_admittance(freq_test, C0, R1, L1, C1,
+                             R2, L2, C2)
     Y_mag_test = np.abs(Y_test)
     
     fs_idx = np.argmin(np.abs(freq_test - fs_optimized))

@@ -311,6 +311,7 @@ class GraphExtractorApp(QMainWindow):
         
         # Tabs for different stages
         self.tabs = QTabWidget()
+        self.tabs.currentChanged.connect(self.onTabChanged)
         layout.addWidget(self.tabs)
         
         # Step 1: Load
@@ -333,11 +334,16 @@ class GraphExtractorApp(QMainWindow):
         self.tab_bvd = self.createBVDTab()
         self.tabs.addTab(self.tab_bvd, "5. BVD Model")
         
+        # Step 6: RX/TX Sensitivity
+        self.tab_rxtx = self.createRXTXTab()
+        self.tabs.addTab(self.tab_rxtx, "6. RX/TX Sensitivity")
+        
         # Disable tabs until image is loaded
         self.tabs.setTabEnabled(1, False)
         self.tabs.setTabEnabled(2, False)
         self.tabs.setTabEnabled(3, False)
         self.tabs.setTabEnabled(4, False)
+        self.tabs.setTabEnabled(5, False)
         
     def createLoadTab(self):
         widget = QWidget()
@@ -472,11 +478,11 @@ class GraphExtractorApp(QMainWindow):
         self.model_type_combo.addItems([
             "BVD (Basic)",
             "MBVD (Modified BVD - Recommended)",
-            "EBVD (Extended BVD with Harmonics)",
+            "EBVD (Extended BVD with Harmonics - Best for dual peaks)",
             "Mason (Physical Model - Advanced)",
             "KLM (Krimholtz-Leedom-Matthaei - Hydroacoustic)"
         ])
-        self.model_type_combo.setCurrentIndex(1)  # Default to MBVD
+        self.model_type_combo.setCurrentIndex(2)  # Default to EBVD (best for dual-peak Conductance)
         self.model_type_combo.setToolTip(
             "BVD: Basic 4-parameter model (C0, R1, L1, C1)\n"
             "MBVD: Modified BVD with dielectric losses (R0) - usually more accurate\n"
@@ -632,6 +638,180 @@ class GraphExtractorApp(QMainWindow):
         layout.addLayout(btn_layout)
         
         return widget
+    
+    def createRXTXTab(self):
+        """Create TAB 6 for RX/TX Sensitivity graphs"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Title
+        title = QLabel("📊 RX/TX Sensitivity Graphs")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px;")
+        layout.addWidget(title)
+        
+        # Info label
+        info_label = QLabel(
+            "This tab automatically displays RX and TX sensitivity graphs if functions with 'RX' or 'TX' in their names are found.\n"
+            "Graphs are updated automatically when functions are added or modified."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("padding: 5px; color: #666;")
+        layout.addWidget(info_label)
+        
+        # Splitter for two graphs side by side
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # RX Graph
+        rx_group = QGroupBox("📡 RX Sensitivity")
+        rx_layout = QVBoxLayout()
+        self.rx_plot = pg.PlotWidget()
+        self.rx_plot.setBackground('w')
+        self.rx_plot.setLabel('left', 'Sensitivity', units='dB')
+        self.rx_plot.setLabel('bottom', 'Frequency', units='kHz')
+        self.rx_plot.addLegend()
+        self.rx_plot.showGrid(x=True, y=True, alpha=0.3)
+        rx_layout.addWidget(self.rx_plot)
+        rx_group.setLayout(rx_layout)
+        splitter.addWidget(rx_group)
+        
+        # TX Graph
+        tx_group = QGroupBox("📡 TX Sensitivity")
+        tx_layout = QVBoxLayout()
+        self.tx_plot = pg.PlotWidget()
+        self.tx_plot.setBackground('w')
+        self.tx_plot.setLabel('left', 'Sensitivity', units='dB')
+        self.tx_plot.setLabel('bottom', 'Frequency', units='kHz')
+        self.tx_plot.addLegend()
+        self.tx_plot.showGrid(x=True, y=True, alpha=0.3)
+        tx_layout.addWidget(self.tx_plot)
+        tx_group.setLayout(tx_layout)
+        splitter.addWidget(tx_group)
+        
+        # Set equal sizes for splitter
+        splitter.setSizes([500, 500])
+        layout.addWidget(splitter)
+        
+        # Status label
+        self.rxtx_status_label = QLabel("No RX/TX functions found. Load functions with 'RX' or 'TX' in their names.")
+        self.rxtx_status_label.setStyleSheet("padding: 10px; color: #666; font-style: italic;")
+        layout.addWidget(self.rxtx_status_label)
+        
+        return widget
+    
+    def updateRXTXGraphs(self):
+        """Update RX/TX graphs based on function names - shows fitted functions"""
+        if not hasattr(self, 'rx_plot') or not hasattr(self, 'tx_plot'):
+            return
+        
+        # Clear existing plots
+        self.rx_plot.clear()
+        self.tx_plot.clear()
+        
+        # Find RX and TX functions
+        rx_functions = []
+        tx_functions = []
+        
+        for func in self.all_functions:
+            if not func.get('visible', True):
+                continue
+            name_lower = func['name'].lower()
+            if 'rx' in name_lower and 'tx' not in name_lower:
+                rx_functions.append(func)
+            elif 'tx' in name_lower and 'rx' not in name_lower:
+                tx_functions.append(func)
+        
+        # Plot RX functions (using fitted data)
+        if rx_functions:
+            colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
+            for i, func in enumerate(rx_functions):
+                # Ensure fitting is calculated
+                if not func.get('data') and func.get('original_points'):
+                    self.recalculateFittingForFunction(func)
+                
+                if not func.get('data'):
+                    continue
+                
+                # Use fitted data (func['data'] contains fitted curve with ~200 points)
+                data = np.array(func['data'])
+                if len(data) == 0:
+                    continue
+                
+                freq = data[:, 0]
+                values = data[:, 1]
+                color = colors[i % len(colors)]
+                
+                # Plot fitted curve (smooth line, no symbols for fitted data)
+                self.rx_plot.plot(freq, values, pen=pg.mkPen(color, width=2), 
+                                 name=func['name'])
+                
+                # Optionally show original points as small markers
+                if func.get('original_points'):
+                    orig = np.array(func['original_points'])
+                    if len(orig) > 0:
+                        orig_freq = orig[:, 0]
+                        orig_values = orig[:, 1]
+                        # Show original points as small transparent markers
+                        if len(orig) <= 100:  # Only show markers if not too many points
+                            self.rx_plot.plot(orig_freq, orig_values, 
+                                             pen=None, symbol='o', 
+                                             symbolBrush=pg.mkBrush(color, alpha=100),
+                                             symbolSize=4,
+                                             name=None)  # Don't add to legend
+            
+            self.rx_plot.setTitle(f"RX Sensitivity ({len(rx_functions)} function(s))")
+        else:
+            self.rx_plot.setTitle("RX Sensitivity (No data)")
+        
+        # Plot TX functions (using fitted data)
+        if tx_functions:
+            colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
+            for i, func in enumerate(tx_functions):
+                # Ensure fitting is calculated
+                if not func.get('data') and func.get('original_points'):
+                    self.recalculateFittingForFunction(func)
+                
+                if not func.get('data'):
+                    continue
+                
+                # Use fitted data (func['data'] contains fitted curve with ~200 points)
+                data = np.array(func['data'])
+                if len(data) == 0:
+                    continue
+                
+                freq = data[:, 0]
+                values = data[:, 1]
+                color = colors[i % len(colors)]
+                
+                # Plot fitted curve (smooth line, no symbols for fitted data)
+                self.tx_plot.plot(freq, values, pen=pg.mkPen(color, width=2), 
+                                 name=func['name'])
+                
+                # Optionally show original points as small markers
+                if func.get('original_points'):
+                    orig = np.array(func['original_points'])
+                    if len(orig) > 0:
+                        orig_freq = orig[:, 0]
+                        orig_values = orig[:, 1]
+                        # Show original points as small transparent markers
+                        if len(orig) <= 100:  # Only show markers if not too many points
+                            self.tx_plot.plot(orig_freq, orig_values, 
+                                             pen=None, symbol='o', 
+                                             symbolBrush=pg.mkBrush(color, alpha=100),
+                                             symbolSize=4,
+                                             name=None)  # Don't add to legend
+            
+            self.tx_plot.setTitle(f"TX Sensitivity ({len(tx_functions)} function(s))")
+        else:
+            self.tx_plot.setTitle("TX Sensitivity (No data)")
+        
+        # Update status label
+        if rx_functions or tx_functions:
+            status_text = f"Found: {len(rx_functions)} RX function(s), {len(tx_functions)} TX function(s)"
+            self.rxtx_status_label.setText(status_text)
+            self.rxtx_status_label.setStyleSheet("padding: 10px; color: #006400; font-weight: bold;")
+        else:
+            self.rxtx_status_label.setText("No RX/TX functions found. Load functions with 'RX' or 'TX' in their names.")
+            self.rxtx_status_label.setStyleSheet("padding: 10px; color: #666; font-style: italic;")
     
     def updateBVDFunctionLists(self):
         """Update function selection combo boxes in BVD tab (deprecated - use TAB 4 instead)"""
@@ -800,7 +980,7 @@ class GraphExtractorApp(QMainWindow):
                 logger.info(f"Calculated EBVD parameters: R0={self.bvd_params.get('R0', 0):.2f} Ohm, R1={self.bvd_params.get('R1', 0):.2f} Ohm")
                 if 'R2' in self.bvd_params:
                     logger.info(f"Harmonic branch: R2={self.bvd_params['R2']:.2f} Ohm, L2={self.bvd_params['L2']*1e3:.4f} mH, C2={self.bvd_params['C2']*1e9:.4f} nF")
-                
+            
                 # Update group title
                 self.params_group.setTitle("Calculated EBVD Parameters")
                 
@@ -928,7 +1108,7 @@ class GraphExtractorApp(QMainWindow):
                     logger.info(f"EBVD harmonic: R2={self.bvd_params['R2']:.2f} Ohm")
             elif use_mbvd:
                 logger.info(f"MBVD model: R0={self.bvd_params.get('R0', 0):.2f} Ohm, R1={self.bvd_params.get('R1', 0):.2f} Ohm")
-            
+        
             # Build model curves (pass values in mS for plotting)
             self.plotBVDComparison(freq_g, g_values, freq_b, b_values)
             
@@ -1755,10 +1935,27 @@ class GraphExtractorApp(QMainWindow):
             else:
                 self.loadImageFile(filename)
     
+    def onTabChanged(self, index):
+        """Handle tab change - update RX/TX graphs when TAB 6 is selected"""
+        if index == 5 and hasattr(self, 'rx_plot') and hasattr(self, 'tx_plot'):
+            self.updateRXTXGraphs()
+    
     def loadImageFile(self, filename):
         """Load image"""
-        # Close PDF if open
-        if self.pdf_doc is not None:
+        # Ask if user wants to keep existing functions
+        keep_existing = False
+        if self.all_functions:
+            reply = QMessageBox.question(
+                self, "Load Image",
+                f"Found {len(self.all_functions)} existing function(s).\n"
+                "Keep existing functions and add new data, or replace everything?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
+            )
+            keep_existing = (reply == QMessageBox.StandardButton.Yes)
+        
+        # Close PDF if open (only if not keeping existing data)
+        if not keep_existing and self.pdf_doc is not None:
             self.pdf_doc.close()
             self.pdf_doc = None
             self.pdf_path = None
@@ -1780,13 +1977,21 @@ class GraphExtractorApp(QMainWindow):
         self.calib_image.setImage(pixmap)
         self.extract_image.setImage(pixmap)
         
-        # Reset all data when loading new image
+        # Reset calibration and data points for new image
+        # But keep existing functions if requested
         self.coord_points = []
         self.data_points = []
         self.calibration = None
         self.extracted_data = []
         self.calib_image.clearPoints()
         self.extract_image.clearPoints()
+        
+        # Clear functions only if not keeping existing
+        if not keep_existing:
+            self.all_functions = []
+            logger.info("Cleared all existing functions (replacing with new image)")
+        else:
+            logger.info(f"Keeping {len(self.all_functions)} existing function(s), adding new image data")
         
         # Set calibration mode and cross cursor
         self.calib_image.calibration_mode = True
@@ -1882,11 +2087,29 @@ class GraphExtractorApp(QMainWindow):
             self.extract_image.setImage(pixmap)
             
             # Clear previous calibration and data points when switching pages
+            # Ask if user wants to keep existing functions
+            keep_existing = False
+            if self.all_functions:
+                reply = QMessageBox.question(
+                    self, "Load PDF Page",
+                    f"Found {len(self.all_functions)} existing function(s).\n"
+                    "Keep existing functions and add new data, or replace everything?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes
+                )
+                keep_existing = (reply == QMessageBox.StandardButton.Yes)
+            
             self.coord_points = []
             self.data_points = []
             self.calibration = None
             self.extracted_data = []
-            self.all_functions = []
+            
+            # Clear functions only if not keeping existing
+            if not keep_existing:
+                self.all_functions = []
+                logger.info("Cleared all existing functions (replacing with new PDF page)")
+            else:
+                logger.info(f"Keeping {len(self.all_functions)} existing function(s), adding new PDF page data")
             
             # Enable tabs
             self.tabs.setTabEnabled(1, True)
@@ -2267,6 +2490,9 @@ class GraphExtractorApp(QMainWindow):
             # Show results
             self.showResults()
             self.tabs.setTabEnabled(3, True)
+            # Enable TAB 6 (RX/TX) if there are functions
+            if hasattr(self, 'tab_rxtx'):
+                self.tabs.setTabEnabled(5, True)
             self.tabs.setCurrentIndex(3)
             
             # Update BVD function assignment lists in TAB 4
@@ -2353,6 +2579,9 @@ class GraphExtractorApp(QMainWindow):
         if not hasattr(self, 'conductance_combo_tab4'):
             return
         
+        if not self.all_functions:
+            return
+        
         # Clear existing items
         self.conductance_combo_tab4.clear()
         self.susceptance_combo_tab4.clear()
@@ -2363,28 +2592,105 @@ class GraphExtractorApp(QMainWindow):
             self.conductance_combo_tab4.addItem(func_name)
             self.susceptance_combo_tab4.addItem(func_name)
         
-        # Try to auto-select based on existing assignment first, then names
+        logger.info(f"Updating BVD assignment lists with {len(self.all_functions)} functions")
+        for i, func in enumerate(self.all_functions):
+            logger.info(f"  Function {i}: '{func['name']}' (bvd_type: {func.get('bvd_type')})")
+        
+        # Try to auto-select based on existing assignment first, but validate it matches the name
         conductance_selected = False
         susceptance_selected = False
         
         for i, func in enumerate(self.all_functions):
-            if func.get('bvd_type') == 'conductance':
-                self.conductance_combo_tab4.setCurrentIndex(i)
-                conductance_selected = True
-            elif func.get('bvd_type') == 'susceptance':
-                self.susceptance_combo_tab4.setCurrentIndex(i)
-                susceptance_selected = True
-        
-        # Fallback to name-based selection if no assignment exists
-        if not conductance_selected or not susceptance_selected:
-            for i, func in enumerate(self.all_functions):
-                name_lower = func['name'].lower()
-                if not conductance_selected and ('conductance' in name_lower or 'g' == name_lower):
+            name_lower = func['name'].lower().strip()
+            bvd_type = func.get('bvd_type')
+            
+            # Only use existing assignment if it makes sense (name matches type)
+            if bvd_type == 'conductance':
+                # Validate: name should contain "conductance" or "g"
+                if ('conductance' in name_lower or 
+                    name_lower == 'g' or 
+                    name_lower.startswith('g ') or
+                    name_lower.endswith(' g') or
+                    ' g ' in name_lower or
+                    name_lower.startswith('g(') or
+                    name_lower.endswith('(g)') or
+                    '(g)' in name_lower.lower()):
                     self.conductance_combo_tab4.setCurrentIndex(i)
                     conductance_selected = True
-                elif not susceptance_selected and ('susceptance' in name_lower or 'b' == name_lower):
+                    logger.info(f"Using existing assignment: '{func['name']}' as Conductance")
+                else:
+                    # Invalid assignment, clear it
+                    func['bvd_type'] = None
+                    logger.info(f"Clearing invalid assignment: '{func['name']}' was marked as Conductance but name doesn't match")
+            elif bvd_type == 'susceptance':
+                # Validate: name should contain "susceptance" or "b"
+                if ('susceptance' in name_lower or 
+                    name_lower == 'b' or 
+                    name_lower.startswith('b ') or
+                    name_lower.endswith(' b') or
+                    ' b ' in name_lower or
+                    name_lower.startswith('b(') or
+                    name_lower.endswith('(b)') or
+                    '(b)' in name_lower.lower()):
                     self.susceptance_combo_tab4.setCurrentIndex(i)
                     susceptance_selected = True
+                    logger.info(f"Using existing assignment: '{func['name']}' as Susceptance")
+                else:
+                    # Invalid assignment, clear it
+                    func['bvd_type'] = None
+                    logger.info(f"Clearing invalid assignment: '{func['name']}' was marked as Susceptance but name doesn't match")
+        
+        # Fallback to name-based selection if no assignment exists
+        # Temporarily block signals to avoid conflicts during auto-assignment
+        self.conductance_combo_tab4.blockSignals(True)
+        self.susceptance_combo_tab4.blockSignals(True)
+        
+        # Check for Conductance first
+        if not conductance_selected:
+            for i, func in enumerate(self.all_functions):
+                name = func['name']
+                name_lower = name.lower().strip()
+                # Check if name contains "conductance" (case-insensitive)
+                # Also check for "g" as a word (not just a letter)
+                if ('conductance' in name_lower or 
+                    name_lower == 'g' or 
+                    name_lower.startswith('g ') or
+                    name_lower.endswith(' g') or
+                    ' g ' in name_lower or
+                    name_lower.startswith('g(') or
+                    name_lower.endswith('(g)') or
+                    '(g)' in name_lower.lower()):
+                    self.conductance_combo_tab4.setCurrentIndex(i)
+                    conductance_selected = True
+                    logger.info(f"Auto-assigned function '{name}' as Conductance (G)")
+                    break
+        
+        # Check for Susceptance (independent check)
+        if not susceptance_selected:
+            for i, func in enumerate(self.all_functions):
+                name = func['name']
+                name_lower = name.lower().strip()
+                # Check if name contains "susceptance" (case-insensitive)
+                # Also check for "b" as a word (not just a letter)
+                if ('susceptance' in name_lower or 
+                    name_lower == 'b' or 
+                    name_lower.startswith('b ') or
+                    name_lower.endswith(' b') or
+                    ' b ' in name_lower or
+                    name_lower.startswith('b(') or
+                    name_lower.endswith('(b)') or
+                    '(b)' in name_lower.lower()):
+                    # Make sure we don't select the same function for both
+                    conductance_idx = self.conductance_combo_tab4.currentIndex()
+                    if i != conductance_idx:
+                        self.susceptance_combo_tab4.setCurrentIndex(i)
+                        susceptance_selected = True
+                        logger.info(f"Auto-assigned function '{name}' as Susceptance (B)")
+                        break
+        
+        # Re-enable signals
+        self.conductance_combo_tab4.blockSignals(False)
+        self.susceptance_combo_tab4.blockSignals(False)
         
         # Trigger assignment update to save the selection
         self.onBVDAssignmentChanged()
@@ -2542,6 +2848,10 @@ class GraphExtractorApp(QMainWindow):
     
     def showResults(self):
         """Display results on plot with separate Y axes for each function"""
+        # Update RX/TX graphs if TAB 6 exists
+        if hasattr(self, 'rx_plot') and hasattr(self, 'tx_plot'):
+            self.updateRXTXGraphs()
+        
         plot_item = self.result_plot.getPlotItem()
         
         # Clear old additional axes
@@ -2780,131 +3090,131 @@ class GraphExtractorApp(QMainWindow):
             # Draw first function on main Y axis (left) without normalization
             first_func = visible_functions[0]
             original_idx = self.all_functions.index(first_func)
-            
+        
             data = first_func['data']
             x = [p[0] for p in data]
             y = [p[1] for p in data]
-            
+        
             color = colors[original_idx % len(colors)]
-            
+        
             # Fitting for first function
             fitting_type = first_func.get('fitting_type', 'spline')
             fitting_label = 'polynomial' if fitting_type == 'polynomial' else 'spline'
             self.result_plot.plot(x, y, pen=pg.mkPen(color, width=2), name=f"{first_func['name']} ({fitting_label})")
-            
+        
             # Original points for first function
             orig = first_func['original_points']
             ox = [p[0] for p in orig]
             oy = [p[1] for p in orig]
-            
+        
             if len(orig) > 100:
                 color_with_alpha = color + (100,)
                 self.result_plot.plot(ox, oy, pen=None, symbol='o', 
-                                     symbolBrush=color_with_alpha, symbolSize=3,
-                                     name=f"{first_func['name']} (points, {len(orig)})")
+                                      symbolBrush=color_with_alpha, symbolSize=3,
+                                      name=f"{first_func['name']} (points, {len(orig)})")
             else:
                 self.result_plot.plot(ox, oy, pen=None, symbol='o', 
-                                     symbolBrush=color, symbolSize=8,
-                                     name=f"{first_func['name']} (points, {len(orig)})")
-            
+                                      symbolBrush=color, symbolSize=8,
+                                      name=f"{first_func['name']} (points, {len(orig)})")
+        
             # Set Y range for first function
-            plot_item.setYRange(y_ranges[0][0], y_ranges[0][1], padding=0)
-            
+        plot_item.setYRange(y_ranges[0][0], y_ranges[0][1], padding=0)
+        
             # Configure main Y axis on left
-            left_axis = plot_item.getAxis('left')
-            left_axis.setLabel(first_func['name'], color=color)
-            left_axis.setPen(color)
-            
+        left_axis = plot_item.getAxis('left')
+        left_axis.setLabel(first_func['name'], color=color)
+        left_axis.setPen(color)
+        
             # Create custom ticks for left axis (first function)
-            y_base_min, y_base_max = y_ranges[0]
-            num_ticks = 6
-            left_tick_positions = []
-            for j in range(num_ticks):
-                norm_pos = j / (num_ticks - 1)
-                tick_value = y_base_min + norm_pos * (y_base_max - y_base_min)
-                left_tick_positions.append((tick_value, f'{tick_value:.3f}'))
-            left_axis.setTicks([left_tick_positions])
-            
+        y_base_min, y_base_max = y_ranges[0]
+        num_ticks = 6
+        left_tick_positions = []
+        for j in range(num_ticks):
+            norm_pos = j / (num_ticks - 1)
+            tick_value = y_base_min + norm_pos * (y_base_max - y_base_min)
+            left_tick_positions.append((tick_value, f'{tick_value:.3f}'))
+        left_axis.setTicks([left_tick_positions])
+        
             # For remaining functions create additional right axes with scaling
-            for i in range(1, len(visible_functions)):
-                func = visible_functions[i]
-                original_idx = self.all_functions.index(func)
-                
-                data = func['data']
-                x = [p[0] for p in data]
-                y_real = [p[1] for p in data]
-                
-                # Scale Y to first function range for display
-                y_func_min, y_func_max = y_ranges[i]
-                y_base_min, y_base_max = y_ranges[0]
-                
-                # Normalize Y of this function to first function range
-                y_scaled = []
-                for y_val in y_real:
-                    # Normalize to [0, 1]
-                    normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
-                    # Scale to first function range
-                    scaled = y_base_min + normalized * (y_base_max - y_base_min)
-                    y_scaled.append(scaled)
-                
-                color = colors[original_idx % len(colors)]
-                
-                # Draw scaled data
-                fitting_type = func.get('fitting_type', 'spline')
-                fitting_label = 'polynomial' if fitting_type == 'polynomial' else 'spline'
-                self.result_plot.plot(x, y_scaled, pen=pg.mkPen(color, width=2), name=f"{func['name']} ({fitting_label})")
-                
-                # Original points
-                orig = func['original_points']
-                ox = [p[0] for p in orig]
-                oy_real = [p[1] for p in orig]
-                
-                # Scale original points
-                oy_scaled = []
-                for y_val in oy_real:
-                    normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
-                    scaled = y_base_min + normalized * (y_base_max - y_base_min)
-                    oy_scaled.append(scaled)
-                
-                if len(orig) > 100:
-                    color_with_alpha = color + (100,)
-                    self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
-                                         symbolBrush=color_with_alpha, symbolSize=3,
-                                         name=f"{func['name']} (points, {len(orig)})")
-                else:
-                    self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
-                                         symbolBrush=color, symbolSize=8,
-                                         name=f"{func['name']} (points, {len(orig)})")
-                
-                # Create additional Y axis on right
-                axis = pg.AxisItem('right')
-                plot_item.layout.addItem(axis, 2, 3 + i - 1)
-                self.extra_axes.append(axis)
-                
-                # Create custom ticks for this axis
-                # Generate ticks in scaled coordinates but with real values
-                num_ticks = 5
-                tick_positions = []
-                for j in range(num_ticks):
-                    # Position in normalized space
-                    norm_pos = j / (num_ticks - 1)
-                    # Position in scaled coordinates (first function range)
-                    scaled_pos = y_base_min + norm_pos * (y_base_max - y_base_min)
-                    # Real value of this function
-                    real_value = y_func_min + norm_pos * (y_func_max - y_func_min)
-                    tick_positions.append((scaled_pos, f'{real_value:.3f}'))
-                
-                axis.setTicks([tick_positions])
-                axis.setLabel(func['name'], color=color)
-                axis.setPen(color)
-                
-                # Link axis to main ViewBox
-                axis.linkToView(plot_item.vb)
+        for i in range(1, len(visible_functions)):
+            func = visible_functions[i]
+            original_idx = self.all_functions.index(func)
             
-            plot_item.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
-            plot_item.enableAutoRange(axis=pg.ViewBox.XAxis, enable=True)
-            plot_item.setYRange(y_ranges[0][0], y_ranges[0][1], padding=0)
-            plot_item.vb.setLimits(yMin=y_ranges[0][0], yMax=y_ranges[0][1])
+            data = func['data']
+            x = [p[0] for p in data]
+            y_real = [p[1] for p in data]
+            
+                # Scale Y to first function range for display
+            y_func_min, y_func_max = y_ranges[i]
+            y_base_min, y_base_max = y_ranges[0]
+            
+                # Normalize Y of this function to first function range
+            y_scaled = []
+            for y_val in y_real:
+                    # Normalize to [0, 1]
+                normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
+                    # Scale to first function range
+                scaled = y_base_min + normalized * (y_base_max - y_base_min)
+                y_scaled.append(scaled)
+            
+            color = colors[original_idx % len(colors)]
+            
+            # Draw scaled data
+            fitting_type = func.get('fitting_type', 'spline')
+            fitting_label = 'polynomial' if fitting_type == 'polynomial' else 'spline'
+            self.result_plot.plot(x, y_scaled, pen=pg.mkPen(color, width=2), name=f"{func['name']} ({fitting_label})")
+            
+            # Original points
+            orig = func['original_points']
+            ox = [p[0] for p in orig]
+            oy_real = [p[1] for p in orig]
+            
+            # Scale original points
+            oy_scaled = []
+            for y_val in oy_real:
+                normalized = (y_val - y_func_min) / (y_func_max - y_func_min) if y_func_max > y_func_min else 0.5
+                scaled = y_base_min + normalized * (y_base_max - y_base_min)
+                oy_scaled.append(scaled)
+            
+            if len(orig) > 100:
+                color_with_alpha = color + (100,)
+                self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
+                                      symbolBrush=color_with_alpha, symbolSize=3,
+                                      name=f"{func['name']} (points, {len(orig)})")
+            else:
+                self.result_plot.plot(ox, oy_scaled, pen=None, symbol='o', 
+                                      symbolBrush=color, symbolSize=8,
+                                      name=f"{func['name']} (points, {len(orig)})")
+            
+            # Create additional Y axis on right
+            axis = pg.AxisItem('right')
+            plot_item.layout.addItem(axis, 2, 3 + i - 1)
+            self.extra_axes.append(axis)
+            
+            # Create custom ticks for this axis
+            # Generate ticks in scaled coordinates but with real values
+            num_ticks = 5
+            tick_positions = []
+            for j in range(num_ticks):
+                # Position in normalized space
+                norm_pos = j / (num_ticks - 1)
+                # Position in scaled coordinates (first function range)
+                scaled_pos = y_base_min + norm_pos * (y_base_max - y_base_min)
+                # Real value of this function
+                real_value = y_func_min + norm_pos * (y_func_max - y_func_min)
+                tick_positions.append((scaled_pos, f'{real_value:.3f}'))
+            
+            axis.setTicks([tick_positions])
+            axis.setLabel(func['name'], color=color)
+            axis.setPen(color)
+            
+            # Link axis to main ViewBox
+            axis.linkToView(plot_item.vb)
+        
+        plot_item.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
+        plot_item.enableAutoRange(axis=pg.ViewBox.XAxis, enable=True)
+        plot_item.setYRange(y_ranges[0][0], y_ranges[0][1], padding=0)
+        plot_item.vb.setLimits(yMin=y_ranges[0][0], yMax=y_ranges[0][1])
         
         # Add legend
         plot_item.addLegend()
@@ -3065,15 +3375,32 @@ class GraphExtractorApp(QMainWindow):
                     return
                 
                 # Clear existing functions or append?
-                reply = QMessageBox.question(
-                    self, "Import Functions",
-                    "Replace existing functions or add to them?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
+                existing_count = len(self.all_functions)
+                if existing_count > 0:
+                    reply = QMessageBox.question(
+                        self, "Import Functions",
+                        f"Found {existing_count} existing function(s).\n"
+                        "Replace existing functions or add to them?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No
+                    )
+                else:
+                    reply = QMessageBox.StandardButton.Yes  # No existing functions, so "replace" is fine
                 
                 if reply == QMessageBox.StandardButton.Yes:
                     self.all_functions = []
+                    logger.info("Replacing all existing functions with JSON data")
+                else:
+                    # When appending, only clear bvd_type for functions that don't match their names
+                    for func in self.all_functions:
+                        name_lower = func['name'].lower().strip()
+                        bvd_type = func.get('bvd_type')
+                        # Clear assignment only if it doesn't match the name
+                        if bvd_type == 'conductance' and 'conductance' not in name_lower and 'g' not in name_lower:
+                            func['bvd_type'] = None
+                        elif bvd_type == 'susceptance' and 'susceptance' not in name_lower and 'b' not in name_lower:
+                            func['bvd_type'] = None
+                    logger.info(f"Adding JSON data to {len(self.all_functions)} existing function(s)")
                 
                 # Import functions
                 for func_data in import_data:
@@ -3095,6 +3422,9 @@ class GraphExtractorApp(QMainWindow):
                 self.updateBVDAssignmentLists()
                 self.showResults()
                 self.tabs.setTabEnabled(3, True)
+                # Enable TAB 6 (RX/TX) if there are functions
+                if hasattr(self, 'tab_rxtx'):
+                    self.tabs.setTabEnabled(5, True)
                 # Enable other tabs
                 self.tabs.setTabEnabled(1, True)  # Coordinates tab (may not be needed, but enable anyway)
                 self.tabs.setTabEnabled(2, True)  # Data Points tab (may not be needed, but enable anyway)
@@ -3167,18 +3497,33 @@ class GraphExtractorApp(QMainWindow):
                 
                 if reply == QMessageBox.StandardButton.Yes:
                     self.all_functions = []
+                    logger.info("Replacing all existing functions with CSV data")
+                else:
+                    # When appending, only clear bvd_type for functions that don't match their names
+                    # This preserves correct assignments while allowing auto-assignment for new functions
+                    for func in self.all_functions:
+                        name_lower = func['name'].lower().strip()
+                        bvd_type = func.get('bvd_type')
+                        # Clear assignment only if it doesn't match the name
+                        if bvd_type == 'conductance' and 'conductance' not in name_lower and 'g' not in name_lower:
+                            func['bvd_type'] = None
+                        elif bvd_type == 'susceptance' and 'susceptance' not in name_lower and 'b' not in name_lower:
+                            func['bvd_type'] = None
+                    logger.info(f"Adding CSV data to {len(self.all_functions)} existing function(s)")
                 
                 # Import functions
                 for func_data in functions_data:
+                    func_name = func_data['name'].strip()
+                    logger.info(f"Importing function from CSV: '{func_name}' with {len(func_data['data'])} data points")
                     func = {
-                        'name': func_data['name'],
+                        'name': func_name,
                         'data': func_data['data'],
                         'original_points': func_data['data'].copy(),  # Use same data as original
                         'fitting_type': 'spline',  # Default
                         'smoothing': 0.0,
                         'poly_degree': 3,
                         'y_range_tab2': None,
-                        'bvd_type': None,
+                        'bvd_type': None,  # Always start with None for fresh assignment
                         'visible': True
                     }
                     self.all_functions.append(func)
@@ -3193,6 +3538,9 @@ class GraphExtractorApp(QMainWindow):
                 self.updateBVDAssignmentLists()
                 self.showResults()
                 self.tabs.setTabEnabled(3, True)
+                # Enable TAB 6 (RX/TX) if there are functions
+                if hasattr(self, 'tab_rxtx'):
+                    self.tabs.setTabEnabled(5, True)
                 # Enable other tabs
                 self.tabs.setTabEnabled(1, True)  # Coordinates tab (may not be needed, but enable anyway)
                 self.tabs.setTabEnabled(2, True)  # Data Points tab (may not be needed, but enable anyway)
