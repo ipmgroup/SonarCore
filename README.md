@@ -35,6 +35,8 @@ For detailed installation instructions, see [INSTALL.md](INSTALL.md).
 - **Sub-Bottom Profiler (SBP)**: Ground profile and penetration depth analysis
 - **Side-Scan Sonar**: Seafloor imaging and backscattering analysis
 - **USBL**: Underwater positioning systems
+- **Underwater Acoustic Communication**: Wideband LFM chirp signals with correlation reception (18-34 kHz)
+- **Harbor Defense**: Passive underwater target detection and localization system for port security using distributed hydrophone arrays and TDOA (Time Difference of Arrival) methods
 
 ## 🔬 Transducer Modeling
 
@@ -124,6 +126,8 @@ Complete technical specifications and documentation:
 
 - **[Sonar.md](Sonar.md)** - Complete technical documentation for the SonarCore platform (in Russian)
 - **[OSO.md](OSO.md)** - Output Stage Optimization (OSO) technical specification for underwater acoustic communication systems with CHIRP modulation. Includes multi-parameter optimization of Class D amplifier, transformer, matching inductance, and transducer parameters
+- **[connection.md](connection.md)** - Underwater acoustic communication simulator specification (wideband LFM chirp, correlation reception). Includes signal encoding (up/down chirp for bits), channel modeling, receiver chain, and BER analysis. Status of implementation in SonarCore is documented
+- **[harbor_defense.md](harbor_defense.md)** - Harbor defense system specification for passive underwater target detection and localization in port areas. Includes distributed hydrophone array modeling, TDOA (Time Difference of Arrival) estimation, multipath propagation, and target tracking. Covers mathematical models for signal propagation, noise, and environmental effects in shallow water
 - **[SBP.md](SBP.md)** - Sub-Bottom Profiler (SBP) technical specification with ground profile and penetration depth modeling
 - **[side_scan.md](side_scan.md)** - Side-Scan Sonar technical specification (60-900 kHz) with digital IQ processing
 - **[USBL.md](USBL.md)** - Ultra-Short Baseline positioning system technical specification
