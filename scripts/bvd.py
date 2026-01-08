@@ -54,6 +54,32 @@ except ImportError:
 from PIL import Image
 import io
 
+# Import PDF parser system
+try:
+    from pdf_parsers import (
+        BasePDFParser,
+        register_parser,
+        get_parser,
+        list_parsers,
+        get_parser_info,
+        load_all_parsers
+    )
+    # Load all parsers explicitly
+    try:
+        load_all_parsers()
+        # Also try to import known parsers to ensure they're registered
+        try:
+            import pdf_parsers.neptun_parser
+        except ImportError:
+            logger.debug("Neptun parser not available (this is OK if not needed)")
+    except Exception as e:
+        logger.warning(f"Failed to load parsers: {e}")
+    
+    PDF_PARSERS_AVAILABLE = True
+except ImportError as e:
+    PDF_PARSERS_AVAILABLE = False
+    logger.warning(f"PDF parser system not available: {e}")
+
 
 class ImageWidget(QLabel):
     """Widget for displaying images and handling clicks"""
@@ -302,6 +328,10 @@ class GraphExtractorApp(QMainWindow):
         self.pdf_current_page = 0  # Current page index (0-based)
         self.pdf_total_pages = 0  # Total number of pages
         
+        # Transducer parameters storage
+        self.transducer_params = None  # Extracted transducer parameters
+        self.selected_parser = "NEPTUN_COMMUNICATIONS"  # Default parser
+        
         self.initUI()
         
     def initUI(self):
@@ -338,12 +368,17 @@ class GraphExtractorApp(QMainWindow):
         self.tab_rxtx = self.createRXTXTab()
         self.tabs.addTab(self.tab_rxtx, "6. RX/TX Sensitivity")
         
+        # Step 7: Transducer Parameters
+        self.tab_transducer_params = self.createTransducerParamsTab()
+        self.tabs.addTab(self.tab_transducer_params, "7. Transducer Parameters")
+        
         # Disable tabs until image is loaded
         self.tabs.setTabEnabled(1, False)
         self.tabs.setTabEnabled(2, False)
         self.tabs.setTabEnabled(3, False)
         self.tabs.setTabEnabled(4, False)
         self.tabs.setTabEnabled(5, False)
+        self.tabs.setTabEnabled(6, False)
         
     def createLoadTab(self):
         widget = QWidget()
@@ -426,6 +461,33 @@ class GraphExtractorApp(QMainWindow):
             zoom_layout.addWidget(self.pdf_zoom_input)
             zoom_layout.addStretch()
             btn_layout.addLayout(zoom_layout)
+            
+            # PDF Parser selection
+            parser_layout = QHBoxLayout()
+            parser_layout.addWidget(QLabel("PDF Parser:"))
+            self.pdf_parser_combo = QComboBox()
+            
+            # Populate with available parsers
+            if PDF_PARSERS_AVAILABLE:
+                available_parsers = list_parsers()
+                if available_parsers:
+                    self.pdf_parser_combo.addItems(available_parsers)
+                    # Set tooltip with parser descriptions
+                    parser_info = get_parser_info(available_parsers[0])
+                    if parser_info:
+                        self.pdf_parser_combo.setToolTip(f"Select parser for extracting transducer parameters from PDF\n\nAvailable parsers:\n" + 
+                                                         "\n".join([f"• {name}: {get_parser_info(name).get('description', 'No description')}" 
+                                                                   for name in available_parsers]))
+                else:
+                    self.pdf_parser_combo.addItem("No parsers available")
+                    self.pdf_parser_combo.setEnabled(False)
+            else:
+                self.pdf_parser_combo.addItem("Parser system not available")
+                self.pdf_parser_combo.setEnabled(False)
+            
+            parser_layout.addWidget(self.pdf_parser_combo)
+            parser_layout.addStretch()
+            btn_layout.addLayout(parser_layout)
         
         layout.addLayout(btn_layout)
         
@@ -812,6 +874,261 @@ class GraphExtractorApp(QMainWindow):
         else:
             self.rxtx_status_label.setText("No RX/TX functions found. Load functions with 'RX' or 'TX' in their names.")
             self.rxtx_status_label.setStyleSheet("padding: 10px; color: #666; font-style: italic;")
+    
+    def createTransducerParamsTab(self):
+        """Create TAB 7 for displaying transducer parameters extracted from PDF"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Title
+        title = QLabel("📋 Transducer Parameters")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px;")
+        layout.addWidget(title)
+        
+        # Info label
+        info_label = QLabel(
+            "This tab displays transducer parameters extracted from PDF files.\n"
+            "Parameters are compatible with SonarCore /data/transducers format."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("padding: 5px; color: #666;")
+        layout.addWidget(info_label)
+        
+        # Parameters table
+        self.transducer_params_table = QTableWidget()
+        self.transducer_params_table.setColumnCount(2)
+        self.transducer_params_table.setHorizontalHeaderLabels(['Parameter', 'Value'])
+        self.transducer_params_table.setRowCount(20)
+        
+        # Initialize table with parameter names
+        param_names = [
+            'Model',
+            'f_0 (Resonant Frequency, Hz)',
+            'f_min (Minimum Frequency, Hz)',
+            'f_max (Maximum Frequency, Hz)',
+            'B_tr (Bandwidth -3dB, Hz)',
+            'S_TX (Transmit Sensitivity, dB)',
+            'S_RX (Receive Sensitivity, dB)',
+            'Theta_BW (Beam Angle, degrees)',
+            'Q (Q-factor)',
+            'T_rd (Ring-down time, µs)',
+            'Z (Impedance, Ohm)',
+            'V_max (Max Voltage, Vrms)',
+            'C0 (Capacitance, pF)',
+            'Beam Pattern (Horizontal)',
+            'Beam Pattern (Vertical)',
+            'Source',
+            'Version'
+        ]
+        
+        for i, param_name in enumerate(param_names):
+            self.transducer_params_table.setItem(i, 0, QTableWidgetItem(param_name))
+            self.transducer_params_table.setItem(i, 1, QTableWidgetItem(""))
+        
+        self.transducer_params_table.resizeColumnsToContents()
+        layout.addWidget(self.transducer_params_table)
+        
+        # Export button
+        btn_layout = QHBoxLayout()
+        btn_export = QPushButton("💾 Export to JSON")
+        btn_export.clicked.connect(self.exportTransducerParams)
+        btn_layout.addWidget(btn_export)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+        
+        return widget
+    
+    def updateTransducerParamsTable(self):
+        """Update the transducer parameters table with extracted data"""
+        if not self.transducer_params:
+            return
+        
+        params = self.transducer_params
+        
+        # Helper function to format values
+        def format_value(key, value):
+            if value is None:
+                return "N/A"
+            if key in ['f_0', 'f_min', 'f_max', 'B_tr']:
+                return f"{value:,.0f}"
+            elif key in ['S_TX', 'S_RX']:
+                return f"{value:.1f}"
+            elif key == 'C0':
+                return f"{value * 1e12:.0f}"  # Convert F to pF
+            elif key == 'V_max':
+                return f"{value:.0f}"
+            elif key in ['Theta_BW', 'Q', 'T_rd', 'Z']:
+                return f"{value:.2f}"
+            elif isinstance(value, dict):
+                # Beam pattern
+                pattern = value.get('pattern', 'unknown')
+                if 'deviation' in value:
+                    return f"{pattern} ±{value['deviation']} dB"
+                elif 'angle' in value:
+                    return f"{pattern} {value['angle']}°"
+                return str(pattern)
+            else:
+                return str(value)
+        
+        # Update table
+        row = 0
+        if 'model' in params:
+            self.transducer_params_table.item(row, 1).setText(str(params.get('model', 'N/A')))
+        row += 1
+        
+        if 'f_0' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('f_0', params.get('f_0')))
+        row += 1
+        
+        if 'f_min' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('f_min', params.get('f_min')))
+        row += 1
+        
+        if 'f_max' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('f_max', params.get('f_max')))
+        row += 1
+        
+        if 'B_tr' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('B_tr', params.get('B_tr')))
+        row += 1
+        
+        if 'S_TX' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('S_TX', params.get('S_TX')))
+        row += 1
+        
+        if 'S_RX' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('S_RX', params.get('S_RX')))
+        row += 1
+        
+        if 'Theta_BW' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('Theta_BW', params.get('Theta_BW')))
+        row += 1
+        
+        if 'Q' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('Q', params.get('Q')))
+        row += 1
+        
+        if 'T_rd' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('T_rd', params.get('T_rd')))
+        row += 1
+        
+        if 'Z' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('Z', params.get('Z')))
+        row += 1
+        
+        if 'V_max' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('V_max', params.get('V_max')))
+        row += 1
+        
+        if 'C0' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('C0', params.get('C0')))
+        row += 1
+        
+        if 'beam_pattern_horizontal' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('beam_pattern_horizontal', params.get('beam_pattern_horizontal')))
+        row += 1
+        
+        if 'beam_pattern_vertical' in params:
+            self.transducer_params_table.item(row, 1).setText(format_value('beam_pattern_vertical', params.get('beam_pattern_vertical')))
+        row += 1
+        
+        if 'source' in params:
+            self.transducer_params_table.item(row, 1).setText(str(params.get('source', 'N/A')))
+        row += 1
+        
+        if 'version' in params:
+            self.transducer_params_table.item(row, 1).setText(str(params.get('version', '1.0')))
+        
+        self.transducer_params_table.resizeColumnsToContents()
+    
+    def exportTransducerParams(self):
+        """Export transducer parameters to JSON file compatible with SonarCore format"""
+        if not self.transducer_params:
+            QMessageBox.warning(self, "No Data", "No transducer parameters to export.")
+            return
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Export Transducer Parameters", "", "JSON Files (*.json)"
+        )
+        if not filename:
+            return
+        
+        try:
+            # Convert to SonarCore format
+            output_data = {}
+            
+            # Add comments
+            if 'model' in self.transducer_params:
+                output_data['_comment'] = f"Transducer parameters for {self.transducer_params.get('model', 'Unknown')}"
+                output_data['model'] = self.transducer_params.get('model', 'Unknown')
+                output_data['description'] = self.transducer_params.get('model', 'Unknown')
+            
+            # Add parameters with comments
+            if 'f_0' in self.transducer_params:
+                output_data['f_0'] = self.transducer_params['f_0']
+                output_data['_comment_f_0'] = "Central frequency, Hz"
+            
+            if 'f_min' in self.transducer_params:
+                output_data['f_min'] = self.transducer_params['f_min']
+                output_data['_comment_f_min'] = "Minimum frequency, Hz"
+            
+            if 'f_max' in self.transducer_params:
+                output_data['f_max'] = self.transducer_params['f_max']
+                output_data['_comment_f_max'] = "Maximum frequency, Hz"
+            
+            if 'B_tr' in self.transducer_params:
+                output_data['B_tr'] = self.transducer_params['B_tr']
+                output_data['_comment_B_tr'] = "Bandwidth at -3 dB, Hz"
+            
+            if 'S_TX' in self.transducer_params:
+                output_data['S_TX'] = self.transducer_params['S_TX']
+                output_data['_comment_S_TX'] = "Transmit sensitivity, dB re 1µPa/V @ 1m"
+            
+            if 'S_RX' in self.transducer_params:
+                output_data['S_RX'] = self.transducer_params['S_RX']
+                output_data['_comment_S_RX'] = "Receive sensitivity, dB re 1V/µPa"
+            
+            if 'Theta_BW' in self.transducer_params:
+                output_data['Theta_BW'] = self.transducer_params['Theta_BW']
+                output_data['_comment_Theta_BW'] = "Beam angle at -3 dB, degrees conical"
+            
+            if 'Q' in self.transducer_params:
+                output_data['Q'] = self.transducer_params['Q']
+                output_data['_comment_Q'] = "Q-factor (f_0 / B_tr)"
+            
+            if 'T_rd' in self.transducer_params:
+                output_data['T_rd'] = self.transducer_params['T_rd']
+                output_data['_comment_T_rd'] = "Ring-down time, microseconds"
+            
+            if 'Z' in self.transducer_params:
+                output_data['Z'] = self.transducer_params['Z']
+                output_data['_comment_Z'] = "Nominal impedance, Ohms"
+            
+            if 'V_max' in self.transducer_params:
+                output_data['V_max'] = self.transducer_params['V_max']
+                output_data['_comment_V_max'] = "Maximum transmit voltage, Vrms"
+            
+            if 'C0' in self.transducer_params:
+                # C0 is already stored in Farads from parsePDFTransducerParams
+                output_data['C0'] = self.transducer_params['C0']  # Already in F
+                output_data['_comment_C0'] = "Static capacitance, F"
+            
+            if 'beam_pattern_horizontal' in self.transducer_params:
+                output_data['beam_pattern_horizontal'] = self.transducer_params['beam_pattern_horizontal']
+            
+            if 'beam_pattern_vertical' in self.transducer_params:
+                output_data['beam_pattern_vertical'] = self.transducer_params['beam_pattern_vertical']
+            
+            output_data['source'] = self.transducer_params.get('source', self.pdf_path.name if self.pdf_path else 'Unknown')
+            output_data['version'] = self.transducer_params.get('version', '1.0')
+            
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            
+            QMessageBox.information(self, "Success", f"Transducer parameters exported to:\n{filename}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to export: {e}")
     
     def updateBVDFunctionLists(self):
         """Update function selection combo boxes in BVD tab (deprecated - use TAB 4 instead)"""
@@ -1936,9 +2253,12 @@ class GraphExtractorApp(QMainWindow):
                 self.loadImageFile(filename)
     
     def onTabChanged(self, index):
-        """Handle tab change - update RX/TX graphs when TAB 6 is selected"""
+        """Handle tab change - update RX/TX graphs when TAB 6 is selected, update transducer params when TAB 7 is selected"""
         if index == 5 and hasattr(self, 'rx_plot') and hasattr(self, 'tx_plot'):
             self.updateRXTXGraphs()
+        elif index == 6 and hasattr(self, 'transducer_params_table'):
+            # Update transducer parameters table when TAB 7 is selected
+            self.updateTransducerParamsTable()
     
     def loadImageFile(self, filename):
         """Load image"""
@@ -2047,6 +2367,9 @@ class GraphExtractorApp(QMainWindow):
             # Load the selected page
             self.loadPDFPage(self.pdf_current_page, zoom_factor)
             
+            # Parse transducer parameters from PDF
+            self.parsePDFTransducerParams(filename)
+            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load PDF: {e}")
             if self.pdf_doc is not None:
@@ -2150,6 +2473,117 @@ class GraphExtractorApp(QMainWindow):
             zoom = 3.0
         
         self.loadPDFPage(page_index, zoom)
+    
+    def parsePDFTransducerParams(self, pdf_path):
+        """Parse transducer parameters from PDF using selected parser"""
+        if not PDF_PARSERS_AVAILABLE:
+            logger.warning("PDF parser system not available")
+            return
+        
+        try:
+            # Get selected parser
+            parser_name = self.pdf_parser_combo.currentText() if hasattr(self, 'pdf_parser_combo') else None
+            if not parser_name or parser_name == "No parsers available" or parser_name == "Parser system not available":
+                logger.warning("No parser selected or available")
+                return
+            
+            self.selected_parser = parser_name
+            
+            logger.info(f"Parsing PDF with parser: {parser_name}")
+            
+            # Get parser instance
+            parser = get_parser(parser_name)
+            if not parser:
+                logger.error(f"Parser '{parser_name}' not found")
+                QMessageBox.warning(self, "Parser Error", f"Parser '{parser_name}' is not available.")
+                return
+            
+            # Parse PDF
+            pdf_file = Path(pdf_path)
+            raw_results = parser.parse(pdf_file)
+            
+            if not raw_results:
+                logger.warning("No parameters extracted from PDF")
+                self.transducer_params = None
+                return
+            
+            # Convert to SonarCore format
+            params = {}
+            
+            # Extract model name from filename
+            model_name = pdf_file.stem
+            params['model'] = model_name
+            params['source'] = pdf_file.name
+            params['version'] = '1.0'
+            
+            # Convert frequency parameters
+            if raw_results.get('f_0'):
+                params['f_0'] = raw_results['f_0']
+            
+            if raw_results.get('f_min'):
+                params['f_min'] = raw_results['f_min']
+            
+            if raw_results.get('f_max'):
+                params['f_max'] = raw_results['f_max']
+            
+            # Calculate bandwidth if f_min and f_max are available
+            if params.get('f_min') and params.get('f_max'):
+                params['B_tr'] = params['f_max'] - params['f_min']
+            
+            # Convert sensitivity parameters
+            if raw_results.get('tx_sensitivity'):
+                params['S_TX'] = raw_results['tx_sensitivity']
+            
+            if raw_results.get('rx_sensitivity'):
+                params['S_RX'] = raw_results['rx_sensitivity']
+            
+            # Convert capacitance (from F to pF for display, but store in F)
+            if raw_results.get('capacitance'):
+                params['C0'] = raw_results['capacitance']  # Store in F
+            
+            # Convert voltage
+            if raw_results.get('v_max'):
+                params['V_max'] = raw_results['v_max']
+            
+            # Convert beam angle
+            if raw_results.get('beam_angle'):
+                params['Theta_BW'] = raw_results['beam_angle']
+            
+            # Convert beam patterns
+            if raw_results.get('beam_pattern_horizontal'):
+                params['beam_pattern_horizontal'] = raw_results['beam_pattern_horizontal']
+            
+            if raw_results.get('beam_pattern_vertical'):
+                params['beam_pattern_vertical'] = raw_results['beam_pattern_vertical']
+            
+            # Convert impedance
+            if raw_results.get('impedance'):
+                params['Z'] = raw_results['impedance']
+            
+            # Calculate Q-factor if f_0 and B_tr are available
+            if params.get('f_0') and params.get('B_tr') and params['B_tr'] > 0:
+                params['Q'] = params['f_0'] / params['B_tr']
+            
+            # Estimate ring-down time (T_rd) if Q is available
+            if params.get('Q') and params.get('f_0'):
+                # T_rd ≈ Q / (π * f_0) in seconds, convert to microseconds
+                params['T_rd'] = (params['Q'] / (np.pi * params['f_0'])) * 1e6
+            
+            # Store parameters
+            self.transducer_params = params
+            
+            # Update table
+            self.updateTransducerParamsTable()
+            
+            # Enable TAB 7
+            self.tabs.setTabEnabled(6, True)
+            
+            logger.info(f"Successfully extracted {len(params)} parameters from PDF")
+            
+        except Exception as e:
+            logger.error(f"Error parsing PDF: {e}", exc_info=True)
+            QMessageBox.warning(self, "Parsing Error", f"Failed to parse transducer parameters from PDF:\n{e}")
+            self.transducer_params = None
     
     def loadPDFFromButton(self):
         """Load PDF via button with adjustable zoom"""
