@@ -1329,13 +1329,44 @@ class GraphExtractorApp(QMainWindow):
                 knots = spline.get_knots().tolist()
                 coeffs = spline.get_coeffs().tolist()
                 
-                fitting_params['spline_knots'] = knots
-                fitting_params['spline_coefficients'] = coeffs
-                fitting_params['spline_degree'] = int(spline.get_knots().size - len(coeffs) - 1) if hasattr(spline, 'get_knots') else 3
-                fitting_params['_comment'] = (
-                    f"Spline fitted function. Use spline_knots and spline_coefficients to reconstruct. "
-                    f"Degree: {fitting_params['spline_degree']}, smoothing parameter: {fitting_params['smoothing']}"
-                )
+                # Check if we have too many coefficients (interpolation instead of fitting)
+                # If smoothing=0.0, we get interpolation with ~same number of coeffs as points
+                # For true fitting, we should have much fewer coefficients
+                num_points = len(x_data)
+                num_coeffs = len(coeffs)
+                
+                # If smoothing is 0.0 and we have too many coefficients, use polynomial instead
+                # This provides true fitting with fewer parameters
+                if fitting_params['smoothing'] == 0.0 and num_coeffs > min(50, num_points * 0.8):
+                    logger.info(f"Switching from spline (interpolation) to polynomial fitting for {fitting_params['name']}: "
+                              f"{num_coeffs} coefficients is too many. Using polynomial degree 7.")
+                    # Use polynomial with reasonable degree (7-10) for fitting
+                    poly_degree = min(7, num_points - 1)
+                    if poly_degree < 3:
+                        poly_degree = min(3, num_points - 1)
+                    
+                    poly = Polynomial.fit(x_data, y_data, poly_degree)
+                    coeffs_poly = poly.convert().coef.tolist()
+                    
+                    # Switch to polynomial
+                    fitting_params['fitting_type'] = 'polynomial'
+                    fitting_params['poly_degree'] = poly_degree
+                    fitting_params['polynomial_coefficients'] = coeffs_poly
+                    fitting_params['_comment'] = (
+                        f"Polynomial fitted function (degree {poly_degree}). "
+                        f"Switched from spline interpolation to polynomial fitting for better compression. "
+                        f"Original spline had {num_coeffs} coefficients, polynomial has {len(coeffs_poly)} coefficients."
+                    )
+                else:
+                    # Use spline (either with smoothing > 0, or if coefficients are reasonable)
+                    fitting_params['spline_knots'] = knots
+                    fitting_params['spline_coefficients'] = coeffs
+                    fitting_params['spline_degree'] = int(spline.get_knots().size - len(coeffs) - 1) if hasattr(spline, 'get_knots') else 3
+                    fitting_params['_comment'] = (
+                        f"Spline fitted function. Use spline_knots and spline_coefficients to reconstruct. "
+                        f"Degree: {fitting_params['spline_degree']}, smoothing parameter: {fitting_params['smoothing']}, "
+                        f"coefficients: {num_coeffs}, original points: {num_points}"
+                    )
             except Exception as e:
                 logger.warning(f"Could not extract spline parameters: {e}")
                 return None
