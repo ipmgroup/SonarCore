@@ -505,26 +505,42 @@ class GraphExtractorApp(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
-        # BVD model information
+        # Row 1x2: BVD info (left) and Workflow (right)
+        row1_layout = QHBoxLayout()
+        
+        # Left: BVD model information
+        bvd_info_group = QGroupBox("BVD Model")
+        bvd_info_layout = QVBoxLayout()
         info = QLabel("""
         <b>BVD (Butterworth-Van Dyke) model of piezoelectric transducer</b><br>
         Equivalent circuit: C₀ in parallel with series circuit R₁-L₁-C₁<br>
         Parameter calculation from Admittance data (Conductance and Susceptance)
         """)
         info.setStyleSheet("padding: 15px; background: #e8f5e9; border-radius: 8px;")
-        layout.addWidget(info)
+        bvd_info_layout.addWidget(info)
+        bvd_info_group.setLayout(bvd_info_layout)
+        row1_layout.addWidget(bvd_info_group)
         
-        # Note: Function assignment is done in TAB 4 (Results tab)
+        # Right: Workflow
+        workflow_group = QGroupBox("📋 Workflow")
+        workflow_layout = QVBoxLayout()
         info_bvd = QLabel("""
-        <b>📋 Workflow:</b><br>
+        <b>Steps to create model:</b><br>
         1️⃣ Assign Conductance and Susceptance functions in TAB 4 (Results tab)<br>
-        2️⃣ Select model type below and enter transducer parameters<br>
-        3️⃣ Click "Calculate Model" button below to create model from your experimental data
+        2️⃣ Select model type and enter transducer parameters<br>
+        3️⃣ Click "Create Model" button to calculate parameters from your experimental data
         """)
         info_bvd.setStyleSheet("padding: 10px; background: #e3f2fd; border-radius: 5px;")
-        layout.addWidget(info_bvd)
+        workflow_layout.addWidget(info_bvd)
+        workflow_group.setLayout(workflow_layout)
+        row1_layout.addWidget(workflow_group)
         
-        # Model selection
+        layout.addLayout(row1_layout)
+        
+        # Row 2x2: Model Selection (left) and Transducer Parameters (right)
+        row2_layout = QHBoxLayout()
+        
+        # Left: Model selection
         model_group = QGroupBox("🔬 Model Selection")
         model_layout = QVBoxLayout()
         
@@ -558,27 +574,47 @@ class GraphExtractorApp(QMainWindow):
         model_layout.addLayout(combo_layout)
         
         model_group.setLayout(model_layout)
-        layout.addWidget(model_group)
+        row2_layout.addWidget(model_group)
         
-        # Transducer parameters
+        # Right: Transducer parameters
         params_group = QGroupBox("Transducer Parameters")
-        params_layout = QHBoxLayout()
+        params_layout = QVBoxLayout()
         
-        params_layout.addWidget(QLabel("Static capacitance C₀ (nF):"))
+        params_input_layout = QHBoxLayout()
+        params_input_layout.addWidget(QLabel("Static capacitance C₀ (nF):"))
         self.input_c0 = QLineEdit("12")
         self.input_c0.setMaximumWidth(150)
-        params_layout.addWidget(self.input_c0)
+        params_input_layout.addWidget(self.input_c0)
+        params_input_layout.addStretch()
+        params_layout.addLayout(params_input_layout)
         
-        params_layout.addWidget(QLabel("Resonant frequency fs (kHz):"))
+        params_input_layout2 = QHBoxLayout()
+        params_input_layout2.addWidget(QLabel("Resonant frequency fs (kHz):"))
         self.input_fs = QLineEdit("25")
         self.input_fs.setMaximumWidth(150)
-        params_layout.addWidget(self.input_fs)
+        params_input_layout2.addWidget(self.input_fs)
+        params_input_layout2.addStretch()
+        params_layout.addLayout(params_input_layout2)
         
-        params_layout.addStretch()
         params_group.setLayout(params_layout)
-        layout.addWidget(params_group)
+        row2_layout.addWidget(params_group)
         
-        # Calculated parameters group
+        layout.addLayout(row2_layout)
+        
+        # Row 3x2: Fit Quality (left) and Calculated Parameters (right)
+        row3_layout = QHBoxLayout()
+        
+        # Left: Fit quality assessment
+        fit_quality_group = QGroupBox("BVD Model Fit Quality")
+        fit_quality_layout = QVBoxLayout()
+        self.fit_quality_label = QLabel("No model calculated yet. Click 'Create Model' to calculate parameters.")
+        self.fit_quality_label.setStyleSheet("padding: 10px; font-size: 14px;")
+        self.fit_quality_label.setWordWrap(True)
+        fit_quality_layout.addWidget(self.fit_quality_label)
+        fit_quality_group.setLayout(fit_quality_layout)
+        row3_layout.addWidget(fit_quality_group)
+        
+        # Right: Calculated parameters group
         self.params_group = QGroupBox("Calculated Model Parameters")
         params_layout = QVBoxLayout()
         
@@ -608,9 +644,11 @@ class GraphExtractorApp(QMainWindow):
         params_layout.addWidget(self.bvd_params_table)
         
         self.params_group.setLayout(params_layout)
-        layout.addWidget(self.params_group)
+        row3_layout.addWidget(self.params_group)
         
-        # Comparison plots - 4 plots in 2x2 grid
+        layout.addLayout(row3_layout)
+        
+        # Row 4x1: Comparison plots - 4 plots in 2x2 grid
         compare_group = QGroupBox("Comparison: Experimental (PDF) vs BVD Model")
         compare_layout = QVBoxLayout()
         
@@ -659,12 +697,10 @@ class GraphExtractorApp(QMainWindow):
         compare_group.setLayout(compare_layout)
         layout.addWidget(compare_group)
         
-        # Fit quality assessment
-        self.fit_quality_label = QLabel("")
-        self.fit_quality_label.setStyleSheet("padding: 10px; font-size: 14px;")
-        layout.addWidget(self.fit_quality_label)
+        # Row 5x2: Buttons - Create Model (left) and Export (right)
+        row5_layout = QHBoxLayout()
         
-        # Main button to create model (in TAB 5)
+        # Left: Main button to create model
         btn_create_model = QPushButton("🔬 Create Model")
         btn_create_model.setStyleSheet("""
             QPushButton {
@@ -687,17 +723,16 @@ class GraphExtractorApp(QMainWindow):
             "3. Transducer parameters (C₀, fs) are entered"
         )
         btn_create_model.clicked.connect(self.calculateBVD)
-        layout.addWidget(btn_create_model)
+        row5_layout.addWidget(btn_create_model)
         
-        # Buttons
-        btn_layout = QHBoxLayout()
+        row5_layout.addStretch()
         
+        # Right: Export button
         btn_export_bvd = QPushButton("💾 Export BVD Parameters")
         btn_export_bvd.clicked.connect(self.exportBVDParams)
-        btn_layout.addWidget(btn_export_bvd)
+        row5_layout.addWidget(btn_export_bvd)
         
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
+        layout.addLayout(row5_layout)
         
         return widget
     
