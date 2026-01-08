@@ -14,6 +14,7 @@ SonarCore is a comprehensive software platform for simulating and optimizing hyd
 - **Parameter Optimization**: Automated optimization of system parameters to meet performance targets
 - **Interactive GUI**: User-friendly interface for parameter input and result visualization
 - **Component Library**: Extensive database of real transducers, amplifiers, and ADCs
+- **Transducer Modeling**: Create BVD, MBVD, EBVD, Mason, and KLM models from Conductance and Susceptance data
 
 ## 🚀 Quick Start
 
@@ -34,6 +35,35 @@ For detailed installation instructions, see [INSTALL.md](INSTALL.md).
 - **Sub-Bottom Profiler (SBP)**: Ground profile and penetration depth analysis
 - **Side-Scan Sonar**: Seafloor imaging and backscattering analysis
 - **USBL**: Underwater positioning systems
+
+## 🔬 Transducer Modeling
+
+**✅ Completed:** Transducer model creation from Conductance and Susceptance data.
+
+SonarCore now supports creating comprehensive transducer models from experimental impedance data:
+
+- **BVD (Butterworth-Van Dyke)**: Basic 4-parameter model
+- **MBVD (Modified BVD)**: Enhanced model with dielectric losses (5 parameters)
+- **EBVD (Extended BVD)**: Multi-resonance model with harmonics (7+ parameters)
+- **Mason Model**: Physical wave-based model for ultrasonic transducers
+- **KLM Model**: Equivalent circuit model for hydroacoustic transducers
+
+### Features
+
+- **Data Import**: Load Conductance and Susceptance from CSV files
+- **Model Fitting**: Automatic parameter optimization with multiple error metrics
+- **Model Comparison**: Compare different models and select the best fit
+- **Export**: Save fitted models with all parameters for use in SonarCore simulations
+- **Visualization**: Interactive plots showing model fit quality
+
+### Usage
+
+```bash
+# Run BVD model fitting tool
+python scripts/bvd.py
+```
+
+For detailed information, see [TRANSDUCER_PARAMETERS_REQUIRED.md](TRANSDUCER_PARAMETERS_REQUIRED.md) and [scripts/transducer_models.md](scripts/transducer_models.md).
 
 ## 🔍 Sub-Bottom Profiler (SBP)
 
