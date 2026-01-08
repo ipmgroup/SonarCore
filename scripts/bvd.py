@@ -1154,16 +1154,215 @@ class GraphExtractorApp(QMainWindow):
             if 'beam_pattern_vertical' in self.transducer_params:
                 output_data['beam_pattern_vertical'] = self.transducer_params['beam_pattern_vertical']
             
-            output_data['source'] = self.transducer_params.get('source', self.pdf_path.name if self.pdf_path else 'Unknown')
+            # Get source filename
+            source_name = self.transducer_params.get('source', 'Unknown')
+            if source_name == 'Unknown' and self.pdf_path:
+                # pdf_path can be either Path object or string
+                if isinstance(self.pdf_path, Path):
+                    source_name = self.pdf_path.name
+                else:
+                    # It's a string, extract filename
+                    source_name = Path(self.pdf_path).name
+            output_data['source'] = source_name
             output_data['version'] = self.transducer_params.get('version', '1.0')
+            
+            # Add BVD model type and parameters if available
+            if hasattr(self, 'bvd_params') and self.bvd_params:
+                # Get model type from combo box
+                if hasattr(self, 'model_type_combo'):
+                    model_type = self.model_type_combo.currentText()
+                    output_data['bvd_model_type'] = model_type
+                    output_data['_comment_bvd_model_type'] = "BVD model type used for parameter calculation"
+                
+                # Add BVD model parameters
+                output_data['bvd_model'] = {}
+                output_data['_comment_bvd_model'] = "BVD model parameters for further use"
+                
+                # Copy all BVD parameters (convert to JSON-serializable format)
+                for key, value in self.bvd_params.items():
+                    if key == 'model_type':
+                        continue  # Skip, already saved as bvd_model_type
+                    if isinstance(value, (int, float, str, bool, type(None))):
+                        output_data['bvd_model'][key] = value
+                    elif isinstance(value, np.ndarray):
+                        output_data['bvd_model'][key] = value.tolist()
+                    elif isinstance(value, (list, tuple)):
+                        output_data['bvd_model'][key] = list(value)
+                    else:
+                        # Try to convert to string for complex types
+                        try:
+                            output_data['bvd_model'][key] = str(value)
+                        except:
+                            pass  # Skip if can't serialize
+            
+            # Add fitted functions: Conductance, Susceptance, RX/TX Sensitivity
+            if hasattr(self, 'all_functions') and self.all_functions:
+                output_data['fitted_functions'] = {}
+                output_data['_comment_fitted_functions'] = "Fitted functions for Conductance, Susceptance, and RX/TX Sensitivity"
+                
+                # Find and save Conductance function
+                conductance_func = None
+                for func in self.all_functions:
+                    if func.get('bvd_type') == 'conductance':
+                        conductance_func = func
+                        break
+                
+                if conductance_func:
+                    # Save fitting parameters and original points instead of fitted data points
+                    conductance_fitting = self._extractFittingParameters(conductance_func)
+                    if conductance_fitting:
+                        output_data['fitted_functions']['conductance'] = conductance_fitting
+                
+                # Find and save Susceptance function
+                susceptance_func = None
+                for func in self.all_functions:
+                    if func.get('bvd_type') == 'susceptance':
+                        susceptance_func = func
+                        break
+                
+                if susceptance_func:
+                    # Save fitting parameters and original points instead of fitted data points
+                    susceptance_fitting = self._extractFittingParameters(susceptance_func)
+                    if susceptance_fitting:
+                        output_data['fitted_functions']['susceptance'] = susceptance_fitting
+                
+                # Find and save RX/TX Sensitivity functions
+                rx_functions = []
+                tx_functions = []
+                
+                for func in self.all_functions:
+                    if not func.get('visible', True):
+                        continue
+                    name_lower = func.get('name', '').lower()
+                    if 'rx' in name_lower and 'tx' not in name_lower:
+                        # Save fitting parameters instead of data points
+                        rx_fitting = self._extractFittingParameters(func)
+                        if rx_fitting:
+                            rx_functions.append(rx_fitting)
+                    elif 'tx' in name_lower and 'rx' not in name_lower:
+                        # Save fitting parameters instead of data points
+                        tx_fitting = self._extractFittingParameters(func)
+                        if tx_fitting:
+                            tx_functions.append(tx_fitting)
+                
+                if rx_functions:
+                    output_data['fitted_functions']['rx_sensitivity'] = rx_functions if len(rx_functions) > 1 else rx_functions[0]
+                    if len(rx_functions) == 1:
+                        # Comment already added by _extractFittingParameters
+                        pass
+                    else:
+                        output_data['fitted_functions']['_comment_rx_sensitivity'] = "RX Sensitivity fitted functions with fitting parameters"
+                
+                if tx_functions:
+                    output_data['fitted_functions']['tx_sensitivity'] = tx_functions if len(tx_functions) > 1 else tx_functions[0]
+                    if len(tx_functions) == 1:
+                        # Comment already added by _extractFittingParameters
+                        pass
+                    else:
+                        output_data['fitted_functions']['_comment_tx_sensitivity'] = "TX Sensitivity fitted functions with fitting parameters"
             
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(output_data, f, indent=2, ensure_ascii=False)
             
-            QMessageBox.information(self, "Success", f"Transducer parameters exported to:\n{filename}")
+            QMessageBox.information(self, "Success", f"Transducer parameters exported to:\n{filename}\n\nIncluded:\n- All transducer parameters\n- BVD model type and parameters\n- Fitted functions (Conductance, Susceptance, RX/TX)")
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to export: {e}")
+            logger.error(f"Export error: {e}", exc_info=True)
+    
+    def _extractFittingParameters(self, func):
+        """
+        Extract fitting parameters from function instead of data points.
+        Returns dictionary with fitting parameters that can be used to reconstruct the function.
+        For spline: saves knots and coefficients
+        For polynomial: saves polynomial coefficients
+        """
+        if not func:
+            return None
+        
+        fitting_params = {
+            'name': func.get('name', 'Unknown'),
+            'fitting_type': func.get('fitting_type', 'spline'),
+            'smoothing': float(func.get('smoothing', 0.0)),
+            'poly_degree': int(func.get('poly_degree', 3))
+        }
+        
+        # Get original points to reconstruct the fitting
+        original_points = func.get('original_points')
+        if not original_points:
+            return None
+        
+        # Convert to numpy arrays
+        if isinstance(original_points, list):
+            x_data = np.array([p[0] for p in original_points])
+            y_data = np.array([p[1] for p in original_points])
+        elif isinstance(original_points, np.ndarray):
+            x_data = np.array([p[0] for p in original_points])
+            y_data = np.array([p[1] for p in original_points])
+        else:
+            return None
+        
+        # Sort by x
+        sort_idx = np.argsort(x_data)
+        x_data = x_data[sort_idx]
+        y_data = y_data[sort_idx]
+        
+        # Add frequency range
+        fitting_params['frequency_range'] = {
+            'min': float(x_data.min()),
+            'max': float(x_data.max()),
+            '_comment': "Frequency range in kHz"
+        }
+        
+        # Extract fitting parameters based on type
+        if fitting_params['fitting_type'] == 'spline':
+            try:
+                # Recreate spline to get knots and coefficients
+                y_range = y_data.max() - y_data.min()
+                if y_range == 0:
+                    y_range = 1.0
+                s_param = fitting_params['smoothing'] * (y_range ** 2) * len(x_data)
+                
+                spline = UnivariateSpline(x_data, y_data, s=s_param)
+                
+                # Extract knots and coefficients
+                knots = spline.get_knots().tolist()
+                coeffs = spline.get_coeffs().tolist()
+                
+                fitting_params['spline_knots'] = knots
+                fitting_params['spline_coefficients'] = coeffs
+                fitting_params['spline_degree'] = int(spline.get_knots().size - len(coeffs) - 1) if hasattr(spline, 'get_knots') else 3
+                fitting_params['_comment'] = (
+                    f"Spline fitted function. Use spline_knots and spline_coefficients to reconstruct. "
+                    f"Degree: {fitting_params['spline_degree']}, smoothing parameter: {fitting_params['smoothing']}"
+                )
+            except Exception as e:
+                logger.warning(f"Could not extract spline parameters: {e}")
+                return None
+        
+        else:  # polynomial
+            try:
+                # Fit polynomial to get coefficients
+                poly_degree = min(fitting_params['poly_degree'], len(x_data) - 1)
+                if poly_degree < 1:
+                    poly_degree = 1
+                
+                poly = Polynomial.fit(x_data, y_data, poly_degree)
+                # Get coefficients (convert to list for JSON)
+                # Convert to standard polynomial form: y = a0 + a1*x + a2*x² + ...
+                coeffs = poly.convert().coef.tolist()
+                
+                fitting_params['polynomial_coefficients'] = coeffs
+                fitting_params['_comment'] = (
+                    f"Polynomial fitted function (degree {poly_degree}). "
+                    f"Use polynomial_coefficients to reconstruct: y = a0 + a1*x + a2*x² + ... "
+                    f"where coefficients are [a0, a1, a2, ...]"
+                )
+            except Exception as e:
+                logger.warning(f"Could not extract polynomial coefficients: {e}")
+                return None
+        
+        return fitting_params
     
     def updateBVDFunctionLists(self):
         """Update function selection combo boxes in BVD tab (deprecated - use TAB 4 instead)"""
