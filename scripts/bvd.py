@@ -1604,12 +1604,20 @@ class GraphExtractorApp(QMainWindow):
         params = self.transducer_params.copy()
         
         # If a specific model is selected and we have models data
-        if self.selected_model != "Default" and self.all_models_data and self.selected_model in self.all_models_data:
+        # Note: if we have models, selected_model will be one of them (D1, D2, etc.)
+        if self.all_models_data and self.selected_model and self.selected_model in self.all_models_data:
             model_data = self.all_models_data[self.selected_model]
             
             # Update parameters with model-specific values
             if 'f_0' in model_data:
                 params['f_0'] = model_data['f_0']
+            if 'f_min' in model_data:
+                params['f_min'] = model_data['f_min']
+            if 'f_max' in model_data:
+                params['f_max'] = model_data['f_max']
+            if 'bandwidth' in model_data:
+                # Convert bandwidth to B_tr
+                params['B_tr'] = model_data['bandwidth']
             if 'beam_horizontal' in model_data:
                 # Convert to SonarCore format: Theta_BW
                 params['Theta_BW'] = model_data['beam_horizontal']
@@ -3467,14 +3475,19 @@ class GraphExtractorApp(QMainWindow):
             if 'models' in raw_results and raw_results['models'] and isinstance(raw_results['models'], dict):
                 self.all_models_data = raw_results['models']
                 logger.info(f"Stored {len(self.all_models_data)} models: {list(self.all_models_data.keys())}")
-                # Update model combo box
+                # Update model combo box with model names (D1, D2, etc.)
                 if hasattr(self, 'model_combo'):
                     self.model_combo.clear()
-                    self.model_combo.addItem("Default")
-                    for model_key in sorted(self.all_models_data.keys()):
+                    # Add model names sorted (D1, D2, etc.)
+                    model_keys = sorted(self.all_models_data.keys())
+                    for model_key in model_keys:
                         self.model_combo.addItem(model_key)
+                    # Set first model as selected
+                    if model_keys:
+                        self.model_combo.setCurrentIndex(0)
+                        self.selected_model = model_keys[0]
                     self.model_combo.setEnabled(True)
-                    self.selected_model = "Default"  # Reset to default
+                    logger.info(f"Model combo updated with models: {model_keys}, selected: {self.selected_model}")
             else:
                 self.all_models_data = None
                 if hasattr(self, 'model_combo'):

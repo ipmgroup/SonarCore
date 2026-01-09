@@ -1,0 +1,158 @@
+{
+  "_comment": "Transducer parameters for 250SERIES - D2",
+  "model": "250SERIES - D2",
+  "description": "250SERIES - D2",
+  "f_0": 500000.0,
+  "_comment_f_0": "Central frequency, Hz",
+  "f_min": 95000.0,
+  "_comment_f_min": "Minimum frequency, Hz",
+  "f_max": 550000.0,
+  "_comment_f_max": "Maximum frequency, Hz",
+  "S_TX": 171.0,
+  "_comment_S_TX": "Transmit sensitivity, dB re 1µPa/V @ 1m",
+  "S_RX": -203.0,
+  "_comment_S_RX": "Receive sensitivity, dB re 1V/µPa",
+  "Theta_BW": 0.4,
+  "_comment_Theta_BW": "Beam angle at -3 dB, degrees conical",
+  "V_max": 300.0,
+  "_comment_V_max": "Maximum transmit voltage, Vrms",
+  "beam_pattern_horizontal": {
+    "type": "horizontal",
+    "pattern": "directional",
+    "angle": 0.4
+  },
+  "beam_pattern_vertical": {
+    "type": "vertical",
+    "pattern": "directional",
+    "angle": 50.0
+  },
+  "source": "250SERIES.pdf",
+  "version": "1.0",
+  "bvd_model_type": "KLM (Krimholtz-Leedom-Matthaei - Hydroacoustic)",
+  "_comment_bvd_model_type": "BVD model type used for parameter calculation",
+  "bvd_model": {
+    "C0": 5e-09,
+    "R0": 55850.21434452083,
+    "k_t": 0.30980831976195716,
+    "Z_a": 40678494.215040416,
+    "t": 0.008485664967257021,
+    "A": 0.0023959975624737472,
+    "rho": 7800,
+    "c": 5215.191566030822,
+    "alpha": 87.4773602894247,
+    "R_m": 7246.626732499641,
+    "Z_load": 1500000.0,
+    "fs": 461787.01488074544,
+    "fp": 554144.4178568945,
+    "R1": 72.46626733378525,
+    "L1": 5.757221598905079e-05,
+    "C1": 2.063212136702553e-09,
+    "Qm": 2.3051470720104454,
+    "k": 0.30980831976195716,
+    "tan_delta": 0.0012341943854069376
+  },
+  "_comment_bvd_model": "BVD model parameters for further use",
+  "fitted_functions": {
+    "conductance": {
+      "name": "Conductance",
+      "fitting_type": "polynomial",
+      "smoothing": 0.0,
+      "poly_degree": 10,
+      "frequency_range": {
+        "min": 401.822687,
+        "max": 598.380329,
+        "_comment": "Frequency range in kHz"
+      },
+      "polynomial_coefficients": [
+        -468540067.4373339,
+        9491842.891627792,
+        -86294.04163693494,
+        463.6368442424678,
+        -1.6302483063414912,
+        0.003919972418452265,
+        -6.527743802454451e-06,
+        7.433700390270487e-09,
+        -5.540418229043184e-12,
+        2.4404628720610988e-15,
+        -4.824608164714777e-19
+      ],
+      "_comment": "Polynomial fitted function (degree 10). Use polynomial_coefficients to reconstruct: y = a0 + a1*x + a2*x² + ... where coefficients are [a0, a1, a2, ...]"
+    },
+    "susceptance": {
+      "name": "Susceptance",
+      "fitting_type": "polynomial",
+      "smoothing": 0.0,
+      "poly_degree": 10,
+      "frequency_range": {
+        "min": 401.393522,
+        "max": 598.809495,
+        "_comment": "Frequency range in kHz"
+      },
+      "polynomial_coefficients": [
+        -306568723.7654085,
+        6400398.557193572,
+        -59963.39874380906,
+        331.96955211148435,
+        -1.2026709027101092,
+        0.0029791904297292405,
+        -5.110241869873524e-06,
+        5.993475996564081e-09,
+        -4.599761907801098e-12,
+        2.085929101241149e-15,
+        -4.2445487060304504e-19
+      ],
+      "_comment": "Polynomial fitted function (degree 10). Use polynomial_coefficients to reconstruct: y = a0 + a1*x + a2*x² + ... where coefficients are [a0, a1, a2, ...]"
+    },
+    "rx_sensitivity": {
+      "name": "RX",
+      "fitting_type": "polynomial",
+      "smoothing": 0.0,
+      "poly_degree": 10,
+      "frequency_range": {
+        "min": 450.580321,
+        "max": 549.295917,
+        "_comment": "Frequency range in kHz"
+      },
+      "polynomial_coefficients": [
+        181003318592.04202,
+        -3586873365.246415,
+        31950432.059434872,
+        -168462.92630682955,
+        582.2420724917904,
+        -1.378286603371154,
+        0.0022630659112038154,
+        -2.5449100381241168e-06,
+        1.875775693993706e-09,
+        -8.18273327841139e-13,
+        1.6042399846003595e-16
+      ],
+      "_comment": "Polynomial fitted function (degree 10). Use polynomial_coefficients to reconstruct: y = a0 + a1*x + a2*x² + ... where coefficients are [a0, a1, a2, ...]"
+    },
+    "tx_sensitivity": {
+      "name": "TX",
+      "fitting_type": "polynomial",
+      "smoothing": 0.0,
+      "poly_degree": 10,
+      "frequency_range": {
+        "min": 450.365254,
+        "max": 549.295917,
+        "_comment": "Frequency range in kHz"
+      },
+      "polynomial_coefficients": [
+        200412121149.42972,
+        -3966690364.5648932,
+        35291687.79240855,
+        -185862.59346278093,
+        641.6402475453648,
+        -1.517176716052059,
+        0.0024883447589303487,
+        -2.795184001211006e-06,
+        2.0580275156439783e-09,
+        -8.96826465904577e-13,
+        1.7564114995203106e-16
+      ],
+      "_comment": "Polynomial fitted function (degree 10). Use polynomial_coefficients to reconstruct: y = a0 + a1*x + a2*x² + ... where coefficients are [a0, a1, a2, ...]"
+    }
+  },
+  "_comment_fitted_functions": "Fitted functions for Conductance, Susceptance, and RX/TX Sensitivity"
+}
