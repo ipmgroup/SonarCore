@@ -402,25 +402,20 @@ class GraphExtractorApp(QMainWindow):
         
         # Image/PDF loading section
         image_group = QGroupBox("Load from Image/PDF")
-        image_layout = QVBoxLayout()
+        image_layout = QHBoxLayout()
         
         # Buttons row
-        buttons_row = QHBoxLayout()
         btn_image = QPushButton("📷 Load Image")
         btn_image.clicked.connect(self.loadImage)
-        buttons_row.addWidget(btn_image)
+        image_layout.addWidget(btn_image)
         
         if PDF_AVAILABLE:
             btn_pdf = QPushButton("📄 Load PDF")
             btn_pdf.clicked.connect(lambda: self.loadPDFFromButton())
-            buttons_row.addWidget(btn_pdf)
-        buttons_row.addStretch()
-        image_layout.addLayout(buttons_row)
-        
-        # PDF page selection (only visible when PDF is loaded)
-        if PDF_AVAILABLE:
-            pdf_page_layout = QHBoxLayout()
-            pdf_page_layout.addWidget(QLabel("PDF Page:"))
+            image_layout.addWidget(btn_pdf)
+            
+            # PDF page selection (only visible when PDF is loaded)
+            image_layout.addWidget(QLabel("PDF Page:"))
             self.pdf_page_spinbox = QSpinBox()
             self.pdf_page_spinbox.setMinimum(1)
             self.pdf_page_spinbox.setMaximum(1)
@@ -428,43 +423,19 @@ class GraphExtractorApp(QMainWindow):
             self.pdf_page_spinbox.setEnabled(False)  # Disabled until PDF is loaded
             self.pdf_page_spinbox.setToolTip("Select page number from PDF document")
             self.pdf_page_spinbox.valueChanged.connect(self.onPDFPageChanged)
-            pdf_page_layout.addWidget(self.pdf_page_spinbox)
+            image_layout.addWidget(self.pdf_page_spinbox)
             self.pdf_page_total_label = QLabel("of 1")
-            pdf_page_layout.addWidget(self.pdf_page_total_label)
-            pdf_page_layout.addStretch()
-            image_layout.addLayout(pdf_page_layout)
-        
-        image_group.setLayout(image_layout)
-        btn_layout.addWidget(image_group)
-        
-        # Data file loading section
-        data_group = QGroupBox("Load from Data Files")
-        data_layout = QHBoxLayout()
-        btn_csv = QPushButton("📥 Load CSV")
-        btn_csv.clicked.connect(self.loadDataFromCSV)
-        data_layout.addWidget(btn_csv)
-        
-        btn_json = QPushButton("📥 Load JSON")
-        btn_json.clicked.connect(self.loadDataFromJSON)
-        data_layout.addWidget(btn_json)
-        data_layout.addStretch()
-        data_group.setLayout(data_layout)
-        btn_layout.addWidget(data_group)
-        
-        # PDF zoom settings
-        if PDF_AVAILABLE:
-            zoom_layout = QHBoxLayout()
-            zoom_layout.addWidget(QLabel("PDF Zoom (quality):"))
+            image_layout.addWidget(self.pdf_page_total_label)
+            
+            # PDF zoom settings
+            image_layout.addWidget(QLabel("PDF Zoom (quality):"))
             self.pdf_zoom_input = QLineEdit("3.0")
             self.pdf_zoom_input.setMaximumWidth(100)
             self.pdf_zoom_input.setToolTip("Resolution multiplier (1.0-5.0). Higher = better quality, but slower")
-            zoom_layout.addWidget(self.pdf_zoom_input)
-            zoom_layout.addStretch()
-            btn_layout.addLayout(zoom_layout)
+            image_layout.addWidget(self.pdf_zoom_input)
             
             # PDF Parser selection
-            parser_layout = QHBoxLayout()
-            parser_layout.addWidget(QLabel("PDF Parser:"))
+            image_layout.addWidget(QLabel("PDF Parser:"))
             self.pdf_parser_combo = QComboBox()
             
             # Populate with available parsers
@@ -485,9 +456,25 @@ class GraphExtractorApp(QMainWindow):
                 self.pdf_parser_combo.addItem("Parser system not available")
                 self.pdf_parser_combo.setEnabled(False)
             
-            parser_layout.addWidget(self.pdf_parser_combo)
-            parser_layout.addStretch()
-            btn_layout.addLayout(parser_layout)
+            image_layout.addWidget(self.pdf_parser_combo)
+        
+        image_layout.addStretch()
+        image_group.setLayout(image_layout)
+        btn_layout.addWidget(image_group)
+        
+        # Data file loading section
+        data_group = QGroupBox("Load from Data Files")
+        data_layout = QHBoxLayout()
+        btn_csv = QPushButton("📥 Load CSV")
+        btn_csv.clicked.connect(self.loadDataFromCSV)
+        data_layout.addWidget(btn_csv)
+        
+        btn_json = QPushButton("📥 Load JSON")
+        btn_json.clicked.connect(self.loadDataFromJSON)
+        data_layout.addWidget(btn_json)
+        data_layout.addStretch()
+        data_group.setLayout(data_layout)
+        btn_layout.addWidget(data_group)
         
         layout.addLayout(btn_layout)
         
