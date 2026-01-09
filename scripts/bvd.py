@@ -105,6 +105,13 @@ class ImageWidget(QLabel):
         self.target_color = None
         self.calibration_mode = False  # Calibration mode - cursor always cross
         
+        # Brush mode for blocking areas
+        self.brush_mode = False
+        self.blocked_areas = []  # List of rectangles: [(x1, y1, x2, y2), ...]
+        self.is_brushing = False
+        self.brush_start = None
+        self.brush_current = None
+        
     def setImage(self, pixmap):
         self.original_pixmap = pixmap
         self.updateDisplay()
@@ -165,6 +172,44 @@ class ImageWidget(QLabel):
                 x2, y2 = self.selection_current
                 painter.drawRect(int(min(x1, x2)), int(min(y1, y2)), int(abs(x2-x1)), int(abs(y2-y1)))
             
+            # Draw blocked areas (brush rectangles)
+            for area in self.blocked_areas:
+                x1, y1, x2, y2 = area
+                # Convert to display coordinates
+                if self.zoom_rect:
+                    zoom_x1, zoom_y1, zoom_x2, zoom_y2 = self.zoom_rect
+                    # Check if area is within zoomed area
+                    if not (x2 < zoom_x1 or x1 > zoom_x2 or y2 < zoom_y1 or y1 > zoom_y2):
+                        # Clip to zoom area
+                        clip_x1 = max(x1, zoom_x1)
+                        clip_y1 = max(y1, zoom_y1)
+                        clip_x2 = min(x2, zoom_x2)
+                        clip_y2 = min(y2, zoom_y2)
+                        # Convert to display coordinates
+                        disp_x1 = (clip_x1 - zoom_x1) * scaled.width() / (zoom_x2 - zoom_x1)
+                        disp_y1 = (clip_y1 - zoom_y1) * scaled.height() / (zoom_y2 - zoom_y1)
+                        disp_x2 = (clip_x2 - zoom_x1) * scaled.width() / (zoom_x2 - zoom_x1)
+                        disp_y2 = (clip_y2 - zoom_y1) * scaled.height() / (zoom_y2 - zoom_y1)
+                        painter.setPen(QPen(QColor(255, 0, 0), 2, Qt.PenStyle.DashLine))
+                        painter.setBrush(QColor(255, 0, 0, 80))
+                        painter.drawRect(int(disp_x1), int(disp_y1), int(disp_x2 - disp_x1), int(disp_y2 - disp_y1))
+                else:
+                    disp_x1 = x1 * scaled.width() / self.original_pixmap.width()
+                    disp_y1 = y1 * scaled.height() / self.original_pixmap.height()
+                    disp_x2 = x2 * scaled.width() / self.original_pixmap.width()
+                    disp_y2 = y2 * scaled.height() / self.original_pixmap.height()
+                    painter.setPen(QPen(QColor(255, 0, 0), 2, Qt.PenStyle.DashLine))
+                    painter.setBrush(QColor(255, 0, 0, 80))
+                    painter.drawRect(int(disp_x1), int(disp_y1), int(disp_x2 - disp_x1), int(disp_y2 - disp_y1))
+            
+            # Draw current brush rectangle being drawn
+            if self.is_brushing and self.brush_start and self.brush_current:
+                painter.setPen(QPen(QColor(255, 0, 0), 2, Qt.PenStyle.DashLine))
+                painter.setBrush(QColor(255, 0, 0, 80))
+                x1, y1 = self.brush_start
+                x2, y2 = self.brush_current
+                painter.drawRect(int(min(x1, x2)), int(min(y1, y2)), int(abs(x2-x1)), int(abs(y2-y1)))
+            
             painter.end()
             self.setPixmap(scaled)
     
@@ -184,6 +229,11 @@ class ImageWidget(QLabel):
                         self.pickColorAt(int(orig_x), int(orig_y))
                         self.color_picking_mode = False
                         self.setCursor(Qt.CursorShape.ArrowCursor)
+                    elif self.brush_mode:
+                        # Brush mode - start drawing blocked area
+                        self.is_brushing = True
+                        self.brush_start = (x, y)
+                        self.brush_current = (x, y)
                     elif self.selection_mode:
                         # Area selection mode
                         self.is_selecting = True
@@ -195,19 +245,22 @@ class ImageWidget(QLabel):
                         self.click_callback(orig_x, orig_y)
     
     def mouseMoveEvent(self, event):
-        if self.is_selecting:
-            pixmap = self.pixmap()
-            if pixmap:
-                x_offset = (self.width() - pixmap.width()) / 2
-                y_offset = (self.height() - pixmap.height()) / 2
-                x = event.pos().x() - x_offset
-                y = event.pos().y() - y_offset
-                
-                # Limit coordinates to image size
-                x = max(0, min(x, pixmap.width()))
-                y = max(0, min(y, pixmap.height()))
-                
+        pixmap = self.pixmap()
+        if pixmap:
+            x_offset = (self.width() - pixmap.width()) / 2
+            y_offset = (self.height() - pixmap.height()) / 2
+            x = event.pos().x() - x_offset
+            y = event.pos().y() - y_offset
+            
+            # Limit coordinates to image size
+            x = max(0, min(x, pixmap.width()))
+            y = max(0, min(y, pixmap.height()))
+            
+            if self.is_selecting:
                 self.selection_current = (x, y)
+                self.updateDisplay()
+            elif self.is_brushing:
+                self.brush_current = (x, y)
                 self.updateDisplay()
     
     def mouseReleaseEvent(self, event):
@@ -230,6 +283,22 @@ class ImageWidget(QLabel):
                 self.selection_start = None
                 self.selection_current = None
                 self.updateDisplay()
+        elif self.is_brushing:
+            self.is_brushing = False
+            if self.brush_start and self.brush_current:
+                x1, y1 = self.brush_start
+                x2, y2 = self.brush_current
+                
+                # Convert to original image coordinates
+                orig_x1, orig_y1 = self.displayToOriginal(min(x1, x2), min(y1, y2))
+                orig_x2, orig_y2 = self.displayToOriginal(max(x1, x2), max(y1, y2))
+                
+                # Add blocked area (store as rectangle in original coordinates)
+                self.blocked_areas.append((orig_x1, orig_y1, orig_x2, orig_y2))
+                
+            self.brush_start = None
+            self.brush_current = None
+            self.updateDisplay()
     
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -268,17 +337,50 @@ class ImageWidget(QLabel):
         """Toggle area selection mode"""
         self.selection_mode = enabled
         if enabled:
+            # Disable brush mode when selection mode is enabled
+            self.brush_mode = False
+            if hasattr(self, 'brush_button') and self.brush_button:
+                self.brush_button.setChecked(False)
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
             # If calibration mode, keep cross cursor
             if self.calibration_mode:
                 self.setCursor(Qt.CursorShape.CrossCursor)
-            else:
+            elif not self.brush_mode:
                 self.setCursor(Qt.CursorShape.ArrowCursor)
         
         # Synchronize state with button if attached
         if hasattr(self, 'zoom_button') and self.zoom_button:
             self.zoom_button.setChecked(enabled)
+    
+    def setBrushMode(self, enabled):
+        """Toggle brush mode for blocking areas"""
+        self.brush_mode = enabled
+        if enabled:
+            # Disable selection and color picking modes when brush mode is enabled
+            self.selection_mode = False
+            self.color_picking_mode = False
+            if hasattr(self, 'zoom_button') and self.zoom_button:
+                self.zoom_button.setChecked(False)
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            # If calibration mode, keep cross cursor
+            if self.calibration_mode:
+                self.setCursor(Qt.CursorShape.CrossCursor)
+            elif not self.selection_mode:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+    
+    def clearBlockedAreas(self):
+        """Clear all blocked areas"""
+        self.blocked_areas = []
+        self.updateDisplay()
+    
+    def isPointBlocked(self, x, y):
+        """Check if a point (in original image coordinates) is in a blocked area"""
+        for x1, y1, x2, y2 in self.blocked_areas:
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                return True
+        return False
     
     def resetZoom(self):
         """Reset zoom to full view"""
@@ -300,6 +402,13 @@ class ImageWidget(QLabel):
     def startColorPicking(self):
         """Enable color picking mode"""
         self.color_picking_mode = True
+        # Disable brush and selection modes when color picking
+        self.brush_mode = False
+        self.selection_mode = False
+        if hasattr(self, 'brush_button') and self.brush_button:
+            self.brush_button.setChecked(False)
+        if hasattr(self, 'zoom_button') and self.zoom_button:
+            self.zoom_button.setChecked(False)
         self.setCursor(Qt.CursorShape.CrossCursor)
 
 
@@ -2241,6 +2350,19 @@ class GraphExtractorApp(QMainWindow):
         btn_zoom_reset.clicked.connect(self.extract_image.resetZoom)
         btn_layout.addWidget(btn_zoom_reset)
         
+        # Brush tool for blocking areas
+        self.btn_brush = QPushButton("🖌️ Block Area (Brush)")
+        self.btn_brush.setCheckable(True)
+        self.btn_brush.setToolTip("Draw rectangles to block areas from automatic color search (e.g., legend)")
+        self.btn_brush.clicked.connect(lambda checked: self.extract_image.setBrushMode(checked))
+        self.extract_image.brush_button = self.btn_brush  # Link button to widget
+        btn_layout.addWidget(self.btn_brush)
+        
+        btn_clear_blocks = QPushButton("🗑️ Clear Blocks")
+        btn_clear_blocks.setToolTip("Clear all blocked areas")
+        btn_clear_blocks.clicked.connect(self.extract_image.clearBlockedAreas)
+        btn_layout.addWidget(btn_clear_blocks)
+        
         btn_undo = QPushButton("↶ Undo")
         btn_undo.clicked.connect(self.undoPoint)
         btn_layout.addWidget(btn_undo)
@@ -3043,6 +3165,10 @@ class GraphExtractorApp(QMainWindow):
         # Scan image ONLY within axes
         for x in range(search_x1, search_x2):
             for y in range(search_y1, search_y2):
+                # Skip if point is in blocked area
+                if self.extract_image.isPointBlocked(x, y):
+                    continue
+                
                 color = QColor(image.pixel(x, y))
                 r, g, b = color.red(), color.green(), color.blue()
                 
