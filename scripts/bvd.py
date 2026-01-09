@@ -439,6 +439,8 @@ class GraphExtractorApp(QMainWindow):
         
         # Transducer parameters storage
         self.transducer_params = None  # Extracted transducer parameters
+        self.selected_model = "Default"  # Selected model (D1, D2, etc.)
+        self.all_models_data = None  # Store all models data
         self.selected_parser = "NEPTUN_COMMUNICATIONS"  # Default parser
         
         self.initUI()
@@ -481,13 +483,13 @@ class GraphExtractorApp(QMainWindow):
         self.tab_transducer_params = self.createTransducerParamsTab()
         self.tabs.addTab(self.tab_transducer_params, "7. Transducer Parameters")
         
-        # Disable tabs until image is loaded
+        # Disable tabs until image is loaded (except TAB 7 which is always enabled)
         self.tabs.setTabEnabled(1, False)
         self.tabs.setTabEnabled(2, False)
         self.tabs.setTabEnabled(3, False)
         self.tabs.setTabEnabled(4, False)
         self.tabs.setTabEnabled(5, False)
-        self.tabs.setTabEnabled(6, False)
+        # TAB 7 is always enabled for manual parameter entry
         
     def createLoadTab(self):
         widget = QWidget()
@@ -1019,16 +1021,35 @@ class GraphExtractorApp(QMainWindow):
         # Info label
         info_label = QLabel(
             "This tab displays transducer parameters extracted from PDF files.\n"
-            "Parameters are compatible with SonarCore /data/transducers format."
+            "Parameters are compatible with SonarCore /data/transducers format.\n"
+            "You can manually edit parameter values in the table if parsing failed.\n"
+            "Table shows all models side by side when multiple models are found in PDF."
         )
         info_label.setWordWrap(True)
         info_label.setStyleSheet("padding: 5px; color: #666;")
         layout.addWidget(info_label)
         
-        # Parameters table
+        # Model selection (if multiple models available) - for export
+        model_layout = QHBoxLayout()
+        model_layout.addWidget(QLabel("Export Model:"))
+        self.model_combo = QComboBox()
+        self.model_combo.addItem("Default")
+        self.model_combo.setToolTip("Select model to export (table shows all models)")
+        self.model_combo.currentTextChanged.connect(self.onModelSelectionChanged)
+        self.model_combo.setEnabled(False)  # Disabled until models are loaded
+        model_layout.addWidget(self.model_combo)
+        model_layout.addStretch()
+        layout.addLayout(model_layout)
+        
+        # Info about table structure
+        table_info = QLabel("📊 Table shows all models side by side. Edit values directly in the table.")
+        table_info.setStyleSheet("padding: 5px; color: #0066cc; font-style: italic;")
+        layout.addWidget(table_info)
+        
+        # Parameters table - will be dynamically updated with model columns
         self.transducer_params_table = QTableWidget()
-        self.transducer_params_table.setColumnCount(2)
-        self.transducer_params_table.setHorizontalHeaderLabels(['Parameter', 'Value'])
+        self.transducer_params_table.setColumnCount(2)  # Will be updated when models are loaded
+        self.transducer_params_table.setHorizontalHeaderLabels(['Parameter', 'Default'])
         self.transducer_params_table.setRowCount(20)
         
         # Initialize table with parameter names
@@ -1053,28 +1074,242 @@ class GraphExtractorApp(QMainWindow):
         ]
         
         for i, param_name in enumerate(param_names):
-            self.transducer_params_table.setItem(i, 0, QTableWidgetItem(param_name))
-            self.transducer_params_table.setItem(i, 1, QTableWidgetItem(""))
+            # Parameter name column (not editable)
+            name_item = QTableWidgetItem(param_name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.transducer_params_table.setItem(i, 0, name_item)
+            # Default value column (editable)
+            value_item = QTableWidgetItem("")
+            value_item.setFlags(value_item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self.transducer_params_table.setItem(i, 1, value_item)
+        
+        # Make table editable and connect signal for manual editing
+        self.transducer_params_table.itemChanged.connect(self.onTransducerParamChanged)
         
         self.transducer_params_table.resizeColumnsToContents()
         layout.addWidget(self.transducer_params_table)
         
-        # Export button
+        # Buttons layout
         btn_layout = QHBoxLayout()
+        
+        # Button to enable manual editing
+        btn_manual_edit = QPushButton("✏️ Enable Manual Editing")
+        btn_manual_edit.setToolTip("Enable manual editing of parameters if parsing failed")
+        btn_manual_edit.clicked.connect(self.enableManualEditing)
+        btn_layout.addWidget(btn_manual_edit)
+        
+        btn_layout.addStretch()
+        
+        # Export button
         btn_export = QPushButton("💾 Export to JSON")
         btn_export.clicked.connect(self.exportTransducerParams)
         btn_layout.addWidget(btn_export)
-        btn_layout.addStretch()
+        
         layout.addLayout(btn_layout)
+        
+        # Initialize table on creation (even if empty)
+        # This ensures table is ready for manual entry
+        if not self.transducer_params:
+            self.transducer_params = {
+                'model': 'Manual Entry',
+                'source': 'Manual',
+                'version': '1.0'
+            }
+        # Update table to show parameter names (even without data)
+        self.updateTransducerParamsTable()
         
         return widget
     
-    def updateTransducerParamsTable(self):
-        """Update the transducer parameters table with extracted data"""
+    def enableManualEditing(self):
+        """Enable manual editing mode - initialize empty params if needed"""
         if not self.transducer_params:
+            # Initialize empty parameters structure
+            self.transducer_params = {
+                'model': 'Manual Entry',
+                'source': 'Manual',
+                'version': '1.0'
+            }
+            self.updateTransducerParamsTable()
+        QMessageBox.information(self, "Manual Editing", 
+                               "You can now edit parameter values directly in the table.\n"
+                               "Changes are saved automatically.")
+    
+    def onModelSelectionChanged(self, model_name: str):
+        """Handle model selection change - used for export only, table shows all models"""
+        if hasattr(self, 'model_combo'):
+            self.selected_model = model_name
+            # Table shows all models, so no need to update it here
+            # This selection is only used for export
+    
+    def onTransducerParamChanged(self, item):
+        """Handle manual parameter editing - supports multiple model columns"""
+        if item.column() == 0:  # Parameter name column - don't edit
             return
         
-        params = self.transducer_params
+        row = item.row()
+        col = item.column()
+        param_name_item = self.transducer_params_table.item(row, 0)
+        if not param_name_item:
+            return
+        
+        param_name = param_name_item.text()
+        new_value = item.text().strip()
+        
+        # Initialize transducer_params if not exists
+        if not self.transducer_params:
+            self.transducer_params = {}
+        
+        # Check if we have models or Default column
+        has_models = self.all_models_data and isinstance(self.all_models_data, dict) and len(self.all_models_data) > 0
+        
+        # Initialize all_models_data if needed
+        if not self.all_models_data:
+            self.all_models_data = {}
+        
+        # Determine which model this column represents
+        model_key = None
+        if col == 0:
+            # Parameter name column - don't edit
+            return
+        
+        if has_models:
+            # Column 1+ are model columns
+            if hasattr(self, 'transducer_params_table'):
+                header = self.transducer_params_table.horizontalHeaderItem(col)
+                if header:
+                    model_key = header.text()
+                    # Ensure model exists in all_models_data
+                    if model_key not in self.all_models_data:
+                        self.all_models_data[model_key] = {}
+        else:
+            # Column 1 is Default column
+            if col == 1:
+                model_key = None  # Default column
+        
+        # Parse and store the value based on parameter type
+        try:
+            if 'f_0' in param_name or 'f_min' in param_name or 'f_max' in param_name or 'B_tr' in param_name:
+                # Frequency values in Hz
+                value = float(new_value.replace(',', ''))
+                if model_key and self.all_models_data and model_key in self.all_models_data:
+                    # Update model-specific value
+                    if 'f_0' in param_name:
+                        self.all_models_data[model_key]['f_0'] = value
+                    # f_min, f_max, B_tr are usually shared
+                else:
+                    # Update default value
+                    if 'f_0' in param_name:
+                        self.transducer_params['f_0'] = value
+                    elif 'f_min' in param_name:
+                        self.transducer_params['f_min'] = value
+                    elif 'f_max' in param_name:
+                        self.transducer_params['f_max'] = value
+                    elif 'B_tr' in param_name:
+                        self.transducer_params['B_tr'] = value
+            elif 'S_TX' in param_name:
+                value = float(new_value)
+                if model_key and self.all_models_data and model_key in self.all_models_data:
+                    self.all_models_data[model_key]['tx_sensitivity'] = value
+                else:
+                    self.transducer_params['S_TX'] = value
+            elif 'S_RX' in param_name:
+                value = float(new_value)
+                if model_key and self.all_models_data and model_key in self.all_models_data:
+                    self.all_models_data[model_key]['rx_sensitivity'] = value
+                else:
+                    self.transducer_params['S_RX'] = value
+            elif 'Theta_BW' in param_name:
+                value = float(new_value)
+                if model_key and self.all_models_data and model_key in self.all_models_data:
+                    self.all_models_data[model_key]['beam_horizontal'] = value
+                else:
+                    self.transducer_params['Theta_BW'] = value
+            elif 'Q' in param_name and 'Q-factor' in param_name:
+                self.transducer_params['Q'] = float(new_value)
+            elif 'T_rd' in param_name:
+                self.transducer_params['T_rd'] = float(new_value)
+            elif 'Z' in param_name and 'Impedance' in param_name:
+                self.transducer_params['Z'] = float(new_value)
+            elif 'V_max' in param_name:
+                value = float(new_value)
+                if model_key and self.all_models_data and model_key in self.all_models_data:
+                    self.all_models_data[model_key]['v_max'] = value
+                else:
+                    self.transducer_params['V_max'] = value
+            elif 'C0' in param_name:
+                # Capacitance - convert from pF to F if needed
+                value = float(new_value.replace(',', ''))
+                if value > 1e-6:  # Likely in pF
+                    value = value * 1e-12
+                self.transducer_params['C0'] = value
+            elif 'Model' in param_name and param_name == 'Model':
+                self.transducer_params['model'] = new_value
+            elif 'Source' in param_name:
+                self.transducer_params['source'] = new_value
+            elif 'Version' in param_name:
+                self.transducer_params['version'] = new_value
+        except ValueError:
+            # Invalid number, keep old value
+            pass
+    
+    def updateTransducerParamsTable(self):
+        """Update the transducer parameters table with extracted data - show all models"""
+        # Check if table exists
+        if not hasattr(self, 'transducer_params_table'):
+            logger.warning("transducer_params_table not found, skipping update")
+            return
+        
+        # Temporarily disconnect signal to avoid triggering during update
+        try:
+            self.transducer_params_table.itemChanged.disconnect(self.onTransducerParamChanged)
+        except:
+            pass  # Signal might not be connected yet
+        
+        # Determine column structure:
+        # Logic:
+        # - If PDF has models (e.g., D1, D2) -> show: Parameter | D1 | D2 (no Default column)
+        # - If PDF not loaded or parsing failed -> show: Parameter | Default
+        column_labels = ['Parameter']
+        model_keys = []
+        has_models = False
+        
+        if self.all_models_data and isinstance(self.all_models_data, dict) and len(self.all_models_data) > 0:
+            # PDF has multiple models - show only models (no Default column)
+            model_keys = sorted(self.all_models_data.keys())
+            column_labels.extend(model_keys)
+            has_models = True
+            logger.info(f"updateTransducerParamsTable: Found {len(model_keys)} models: {model_keys}, showing only model columns")
+        else:
+            # No models found - show only Default column
+            self.all_models_data = None  # Ensure it's None
+            column_labels.append('Default')
+            logger.info(f"updateTransducerParamsTable: No models found, showing only Default column")
+        
+        # If no transducer_params, initialize empty params for manual entry
+        if not self.transducer_params:
+            self.transducer_params = {
+                'model': 'Manual Entry',
+                'source': 'Manual',
+                'version': '1.0'
+            }
+        
+        # Update table columns first
+        self.transducer_params_table.setColumnCount(len(column_labels))
+        self.transducer_params_table.setHorizontalHeaderLabels(column_labels)
+        
+        # Set row count before clearing (to ensure we have enough rows)
+        self.transducer_params_table.setRowCount(20)
+        
+        # Clear existing items (but keep rows)
+        self.transducer_params_table.clearContents()
+        
+        logger.info(f"Table columns updated: {column_labels}, total columns: {len(column_labels)}")
+        
+        # Debug: check if all_models_data is available
+        if self.all_models_data:
+            logger.info(f"all_models_data available: {list(self.all_models_data.keys())}")
+        else:
+            logger.warning("all_models_data is None or empty")
         
         # Helper function to format values
         def format_value(key, value):
@@ -1101,80 +1336,334 @@ class GraphExtractorApp(QMainWindow):
             else:
                 return str(value)
         
-        # Update table
+        # Get default parameters
+        default_params = self.transducer_params.copy()
+        
+        # Helper to get value for a specific model
+        def get_model_value(param_key, model_key=None):
+            if model_key and model_key in self.all_models_data:
+                model_data = self.all_models_data[model_key]
+                # Map parameter keys to model data keys
+                if param_key == 'f_0' and 'f_0' in model_data:
+                    return model_data['f_0']
+                elif param_key == 'f_min' and 'f_min' in model_data:
+                    return model_data['f_min']
+                elif param_key == 'f_max' and 'f_max' in model_data:
+                    return model_data['f_max']
+                elif param_key == 'S_TX':
+                    if 'tx_sensitivity' in model_data:
+                        return model_data['tx_sensitivity']
+                    elif 'S_TX' in default_params:
+                        return default_params.get('S_TX')
+                elif param_key == 'S_RX':
+                    if 'rx_sensitivity' in model_data:
+                        return model_data['rx_sensitivity']
+                    elif 'S_RX' in default_params:
+                        return default_params.get('S_RX')
+                elif param_key == 'Theta_BW':
+                    if 'beam_horizontal' in model_data:
+                        return model_data['beam_horizontal']
+                    elif 'Theta_BW' in default_params:
+                        return default_params.get('Theta_BW')
+                elif param_key == 'V_max':
+                    if 'v_max' in model_data:
+                        return model_data['v_max']
+                    elif 'V_max' in default_params:
+                        return default_params.get('V_max')
+                elif param_key == 'B_tr':
+                    if 'bandwidth' in model_data:
+                        return model_data['bandwidth']
+                    elif 'B_tr' in default_params:
+                        return default_params.get('B_tr')
+            return default_params.get(param_key)
+        
+        # Helper to set cell value (creates item if needed)
+        def set_cell_value(row, col, value, editable=True):
+            if col >= self.transducer_params_table.columnCount():
+                return
+            if not self.transducer_params_table.item(row, col):
+                item = QTableWidgetItem(str(value) if value is not None else "N/A")
+                if editable:
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+                else:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.transducer_params_table.setItem(row, col, item)
+            else:
+                self.transducer_params_table.item(row, col).setText(str(value) if value is not None else "N/A")
+        
+        # Recreate parameter name column items (they were cleared)
+        param_names = [
+            'Model',
+            'f_0 (Resonant Frequency, Hz)',
+            'f_min (Minimum Frequency, Hz)',
+            'f_max (Maximum Frequency, Hz)',
+            'B_tr (Bandwidth -3dB, Hz)',
+            'S_TX (Transmit Sensitivity, dB)',
+            'S_RX (Receive Sensitivity, dB)',
+            'Theta_BW (Beam Angle, degrees)',
+            'Q (Q-factor)',
+            'T_rd (Ring-down time, µs)',
+            'Z (Impedance, Ohm)',
+            'V_max (Max Voltage, Vrms)',
+            'C0 (Capacitance, pF)',
+            'Beam Pattern (Horizontal)',
+            'Beam Pattern (Vertical)',
+            'Source',
+            'Version'
+        ]
+        
+        # First, recreate all parameter name column items
+        for i, param_name in enumerate(param_names):
+            name_item = QTableWidgetItem(param_name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.transducer_params_table.setItem(i, 0, name_item)
+        
+        # Update table rows
         row = 0
-        if 'model' in params:
-            self.transducer_params_table.item(row, 1).setText(str(params.get('model', 'N/A')))
+        
+        # Model name
+        if has_models:
+            # Show model names in each model column
+            for col_idx, model_key in enumerate(model_keys, start=1):
+                model_name = f"{default_params.get('model', 'Unknown')} - {model_key}"
+                set_cell_value(row, col_idx, model_name)
+        else:
+            # Show model name in Default column
+            if 'model' in default_params:
+                set_cell_value(row, 1, default_params.get('model', 'N/A'))
         row += 1
         
-        if 'f_0' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('f_0', params.get('f_0')))
+        # f_0
+        if 'f_0' in default_params or any('f_0' in m for m in (self.all_models_data.values() if self.all_models_data else [])):
+            if has_models:
+                # Show f_0 for each model
+                for col_idx, model_key in enumerate(model_keys, start=1):
+                    val = get_model_value('f_0', model_key)
+                    set_cell_value(row, col_idx, format_value('f_0', val) if val else "N/A")
+            else:
+                # Show f_0 in Default column
+                val = get_model_value('f_0')
+                set_cell_value(row, 1, format_value('f_0', val) if val else "N/A")
         row += 1
         
-        if 'f_min' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('f_min', params.get('f_min')))
+        # f_min, f_max (model-specific, calculated as f_0 ± bandwidth/2)
+        # B_tr (shared across models)
+        for param_key in ['f_min', 'f_max']:
+            if param_key in default_params or any(param_key in m for m in (self.all_models_data.values() if self.all_models_data else [])):
+                if has_models:
+                    # Show model-specific values
+                    for col_idx, model_key in enumerate(model_keys, start=1):
+                        if model_key in self.all_models_data and param_key in self.all_models_data[model_key]:
+                            val = self.all_models_data[model_key][param_key]
+                            set_cell_value(row, col_idx, format_value(param_key, val))
+                        else:
+                            # Fallback to default
+                            val = default_params.get(param_key)
+                            set_cell_value(row, col_idx, format_value(param_key, val) if val else "N/A")
+                else:
+                    # Show in Default column
+                    val = default_params.get(param_key)
+                    set_cell_value(row, 1, format_value(param_key, val) if val else "N/A")
+            row += 1
+        
+        # B_tr (model-specific bandwidth)
+        if 'B_tr' in default_params or any('bandwidth' in m for m in (self.all_models_data.values() if self.all_models_data else [])):
+            if has_models:
+                # Show model-specific bandwidth values
+                for col_idx, model_key in enumerate(model_keys, start=1):
+                    val = get_model_value('B_tr', model_key)
+                    set_cell_value(row, col_idx, format_value('B_tr', val) if val else "N/A")
+            else:
+                # Show in Default column
+                val = default_params.get('B_tr')
+                set_cell_value(row, 1, format_value('B_tr', val) if val else "N/A")
         row += 1
         
-        if 'f_max' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('f_max', params.get('f_max')))
+        # S_TX (model-specific)
+        if 'S_TX' in default_params or 'tx_sensitivity' in default_params or any('tx_sensitivity' in m for m in (self.all_models_data.values() if self.all_models_data else [])):
+            if has_models:
+                for col_idx, model_key in enumerate(model_keys, start=1):
+                    val = get_model_value('S_TX', model_key)
+                    set_cell_value(row, col_idx, format_value('S_TX', val) if val else "N/A")
+            else:
+                val = get_model_value('S_TX')
+                set_cell_value(row, 1, format_value('S_TX', val) if val else "N/A")
         row += 1
         
-        if 'B_tr' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('B_tr', params.get('B_tr')))
+        # S_RX (model-specific)
+        if 'S_RX' in default_params or 'rx_sensitivity' in default_params or any('rx_sensitivity' in m for m in (self.all_models_data.values() if self.all_models_data else [])):
+            if has_models:
+                for col_idx, model_key in enumerate(model_keys, start=1):
+                    val = get_model_value('S_RX', model_key)
+                    set_cell_value(row, col_idx, format_value('S_RX', val) if val else "N/A")
+            else:
+                val = get_model_value('S_RX')
+                set_cell_value(row, 1, format_value('S_RX', val) if val else "N/A")
         row += 1
         
-        if 'S_TX' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('S_TX', params.get('S_TX')))
+        # Theta_BW (model-specific)
+        if 'Theta_BW' in default_params or 'beam_angle' in default_params or any('beam_horizontal' in m for m in (self.all_models_data.values() if self.all_models_data else [])):
+            if has_models:
+                for col_idx, model_key in enumerate(model_keys, start=1):
+                    val = get_model_value('Theta_BW', model_key)
+                    set_cell_value(row, col_idx, format_value('Theta_BW', val) if val else "N/A")
+            else:
+                val = get_model_value('Theta_BW')
+                set_cell_value(row, 1, format_value('Theta_BW', val) if val else "N/A")
         row += 1
         
-        if 'S_RX' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('S_RX', params.get('S_RX')))
+        # Q, T_rd, Z (shared)
+        for param_key in ['Q', 'T_rd', 'Z']:
+            if param_key in default_params:
+                if has_models:
+                    val = default_params.get(param_key)
+                    for col_idx in range(1, len(model_keys) + 1):
+                        set_cell_value(row, col_idx, format_value(param_key, val))
+                else:
+                    set_cell_value(row, 1, format_value(param_key, default_params.get(param_key)))
+            row += 1
+        
+        # V_max (model-specific)
+        if 'V_max' in default_params or 'v_max' in default_params or any('v_max' in m for m in (self.all_models_data.values() if self.all_models_data else [])):
+            if has_models:
+                for col_idx, model_key in enumerate(model_keys, start=1):
+                    val = get_model_value('V_max', model_key)
+                    set_cell_value(row, col_idx, format_value('V_max', val) if val else "N/A")
+            else:
+                val = get_model_value('V_max')
+                set_cell_value(row, 1, format_value('V_max', val) if val else "N/A")
         row += 1
         
-        if 'Theta_BW' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('Theta_BW', params.get('Theta_BW')))
+        # C0, beam_patterns, source, version (shared)
+        for param_key in ['C0']:
+            if param_key in default_params:
+                if has_models:
+                    val = default_params.get(param_key)
+                    for col_idx in range(1, len(model_keys) + 1):
+                        set_cell_value(row, col_idx, format_value(param_key, val))
+                else:
+                    set_cell_value(row, 1, format_value(param_key, default_params.get(param_key)))
+            row += 1
+        
+        # Beam patterns (model-specific for horizontal, shared for vertical usually)
+        if 'beam_pattern_horizontal' in default_params or any('beam_horizontal' in m for m in (self.all_models_data.values() if self.all_models_data else [])):
+            if has_models:
+                # Show beam_horizontal for each model
+                for col_idx, model_key in enumerate(model_keys, start=1):
+                    if model_key in self.all_models_data and 'beam_horizontal' in self.all_models_data[model_key]:
+                        angle = self.all_models_data[model_key]['beam_horizontal']
+                        set_cell_value(row, col_idx, f"directional {angle}°")
+                    else:
+                        # Fallback to default
+                        val = default_params.get('beam_pattern_horizontal')
+                        set_cell_value(row, col_idx, format_value('beam_pattern_horizontal', val) if val else "N/A")
+            else:
+                val = default_params.get('beam_pattern_horizontal')
+                set_cell_value(row, 1, format_value('beam_pattern_horizontal', val) if val else "N/A")
         row += 1
         
-        if 'Q' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('Q', params.get('Q')))
+        # Beam pattern vertical (usually shared)
+        if 'beam_pattern_vertical' in default_params or any('beam_vertical' in m for m in (self.all_models_data.values() if self.all_models_data else [])):
+            if has_models:
+                # Show beam_vertical for each model (usually same for all)
+                for col_idx, model_key in enumerate(model_keys, start=1):
+                    if model_key in self.all_models_data and 'beam_vertical' in self.all_models_data[model_key]:
+                        angle = self.all_models_data[model_key]['beam_vertical']
+                        set_cell_value(row, col_idx, f"directional {angle}°")
+                    else:
+                        # Fallback to default
+                        val = default_params.get('beam_pattern_vertical')
+                        set_cell_value(row, col_idx, format_value('beam_pattern_vertical', val) if val else "N/A")
+            else:
+                val = default_params.get('beam_pattern_vertical')
+                set_cell_value(row, 1, format_value('beam_pattern_vertical', val) if val else "N/A")
         row += 1
         
-        if 'T_rd' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('T_rd', params.get('T_rd')))
-        row += 1
-        
-        if 'Z' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('Z', params.get('Z')))
-        row += 1
-        
-        if 'V_max' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('V_max', params.get('V_max')))
-        row += 1
-        
-        if 'C0' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('C0', params.get('C0')))
-        row += 1
-        
-        if 'beam_pattern_horizontal' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('beam_pattern_horizontal', params.get('beam_pattern_horizontal')))
-        row += 1
-        
-        if 'beam_pattern_vertical' in params:
-            self.transducer_params_table.item(row, 1).setText(format_value('beam_pattern_vertical', params.get('beam_pattern_vertical')))
-        row += 1
-        
-        if 'source' in params:
-            self.transducer_params_table.item(row, 1).setText(str(params.get('source', 'N/A')))
-        row += 1
-        
-        if 'version' in params:
-            self.transducer_params_table.item(row, 1).setText(str(params.get('version', '1.0')))
+        # Source and Version
+        for param_key in ['source', 'version']:
+            if param_key in default_params:
+                if has_models:
+                    val = default_params.get(param_key, 'N/A')
+                    for col_idx in range(1, len(model_keys) + 1):
+                        set_cell_value(row, col_idx, val)
+                else:
+                    set_cell_value(row, 1, default_params.get(param_key, 'N/A'))
+            row += 1
         
         self.transducer_params_table.resizeColumnsToContents()
+        
+        # Reconnect signal after update
+        if hasattr(self, 'transducer_params_table'):
+            self.transducer_params_table.itemChanged.connect(self.onTransducerParamChanged)
+    
+    def getParamsForSelectedModel(self):
+        """Get parameters for currently selected model in SonarCore format"""
+        if not self.transducer_params:
+            return None
+        
+        params = self.transducer_params.copy()
+        
+        # If a specific model is selected and we have models data
+        if self.selected_model != "Default" and self.all_models_data and self.selected_model in self.all_models_data:
+            model_data = self.all_models_data[self.selected_model]
+            
+            # Update parameters with model-specific values
+            if 'f_0' in model_data:
+                params['f_0'] = model_data['f_0']
+            if 'beam_horizontal' in model_data:
+                # Convert to SonarCore format: Theta_BW
+                params['Theta_BW'] = model_data['beam_horizontal']
+                # Also update beam_pattern_horizontal in SonarCore format
+                params['beam_pattern_horizontal'] = {
+                    'type': 'horizontal',
+                    'pattern': 'directional',
+                    'angle': model_data['beam_horizontal']
+                }
+            if 'beam_vertical' in model_data:
+                # Update beam_pattern_vertical in SonarCore format
+                params['beam_pattern_vertical'] = {
+                    'type': 'vertical',
+                    'pattern': 'directional',
+                    'angle': model_data['beam_vertical']
+                }
+            if 'tx_sensitivity' in model_data:
+                # Convert to SonarCore format: S_TX
+                params['S_TX'] = model_data['tx_sensitivity']
+            if 'rx_sensitivity' in model_data:
+                # Convert to SonarCore format: S_RX
+                params['S_RX'] = model_data['rx_sensitivity']
+            if 'v_max' in model_data:
+                # Convert to SonarCore format: V_max
+                params['V_max'] = model_data['v_max']
+            
+            # Update model name
+            params['model'] = f"{params.get('model', 'Unknown')} - {self.selected_model}"
+        
+        # Ensure SonarCore format compatibility - convert all aliases to standard names
+        # Convert tx_sensitivity -> S_TX
+        if 'tx_sensitivity' in params and 'S_TX' not in params:
+            params['S_TX'] = params.pop('tx_sensitivity')
+        # Convert rx_sensitivity -> S_RX
+        if 'rx_sensitivity' in params and 'S_RX' not in params:
+            params['S_RX'] = params.pop('rx_sensitivity')
+        # Convert beam_angle -> Theta_BW
+        if 'beam_angle' in params and 'Theta_BW' not in params:
+            params['Theta_BW'] = params.pop('beam_angle')
+        # Convert v_max -> V_max (case sensitive)
+        if 'v_max' in params and 'V_max' not in params:
+            params['V_max'] = params.pop('v_max')
+        
+        return params
     
     def exportTransducerParams(self):
         """Export transducer parameters to JSON file compatible with SonarCore format"""
         if not self.transducer_params:
+            QMessageBox.warning(self, "No Data", "No transducer parameters to export.")
+            return
+        
+        # Get parameters for selected model
+        params = self.getParamsForSelectedModel()
+        if not params:
             QMessageBox.warning(self, "No Data", "No transducer parameters to export.")
             return
         
@@ -1189,69 +1678,85 @@ class GraphExtractorApp(QMainWindow):
             output_data = {}
             
             # Add comments
-            if 'model' in self.transducer_params:
-                output_data['_comment'] = f"Transducer parameters for {self.transducer_params.get('model', 'Unknown')}"
-                output_data['model'] = self.transducer_params.get('model', 'Unknown')
-                output_data['description'] = self.transducer_params.get('model', 'Unknown')
+            if 'model' in params:
+                output_data['_comment'] = f"Transducer parameters for {params.get('model', 'Unknown')}"
+                output_data['model'] = params.get('model', 'Unknown')
+                output_data['description'] = params.get('model', 'Unknown')
             
             # Add parameters with comments
-            if 'f_0' in self.transducer_params:
-                output_data['f_0'] = self.transducer_params['f_0']
+            if 'f_0' in params:
+                output_data['f_0'] = params['f_0']
                 output_data['_comment_f_0'] = "Central frequency, Hz"
             
-            if 'f_min' in self.transducer_params:
-                output_data['f_min'] = self.transducer_params['f_min']
+            if 'f_min' in params:
+                output_data['f_min'] = params['f_min']
                 output_data['_comment_f_min'] = "Minimum frequency, Hz"
             
-            if 'f_max' in self.transducer_params:
-                output_data['f_max'] = self.transducer_params['f_max']
+            if 'f_max' in params:
+                output_data['f_max'] = params['f_max']
                 output_data['_comment_f_max'] = "Maximum frequency, Hz"
             
-            if 'B_tr' in self.transducer_params:
-                output_data['B_tr'] = self.transducer_params['B_tr']
+            if 'B_tr' in params:
+                output_data['B_tr'] = params['B_tr']
                 output_data['_comment_B_tr'] = "Bandwidth at -3 dB, Hz"
             
-            if 'S_TX' in self.transducer_params:
-                output_data['S_TX'] = self.transducer_params['S_TX']
+            # S_TX (SonarCore format)
+            if 'S_TX' in params:
+                output_data['S_TX'] = params['S_TX']
+                output_data['_comment_S_TX'] = "Transmit sensitivity, dB re 1µPa/V @ 1m"
+            elif 'tx_sensitivity' in params:
+                output_data['S_TX'] = params['tx_sensitivity']
                 output_data['_comment_S_TX'] = "Transmit sensitivity, dB re 1µPa/V @ 1m"
             
-            if 'S_RX' in self.transducer_params:
-                output_data['S_RX'] = self.transducer_params['S_RX']
+            # S_RX (SonarCore format)
+            if 'S_RX' in params:
+                output_data['S_RX'] = params['S_RX']
+                output_data['_comment_S_RX'] = "Receive sensitivity, dB re 1V/µPa"
+            elif 'rx_sensitivity' in params:
+                output_data['S_RX'] = params['rx_sensitivity']
                 output_data['_comment_S_RX'] = "Receive sensitivity, dB re 1V/µPa"
             
-            if 'Theta_BW' in self.transducer_params:
-                output_data['Theta_BW'] = self.transducer_params['Theta_BW']
+            # Theta_BW (SonarCore format)
+            if 'Theta_BW' in params:
+                output_data['Theta_BW'] = params['Theta_BW']
+                output_data['_comment_Theta_BW'] = "Beam angle at -3 dB, degrees conical"
+            elif 'beam_angle' in params:
+                output_data['Theta_BW'] = params['beam_angle']
                 output_data['_comment_Theta_BW'] = "Beam angle at -3 dB, degrees conical"
             
-            if 'Q' in self.transducer_params:
-                output_data['Q'] = self.transducer_params['Q']
+            if 'Q' in params:
+                output_data['Q'] = params['Q']
                 output_data['_comment_Q'] = "Q-factor (f_0 / B_tr)"
             
-            if 'T_rd' in self.transducer_params:
-                output_data['T_rd'] = self.transducer_params['T_rd']
+            if 'T_rd' in params:
+                output_data['T_rd'] = params['T_rd']
                 output_data['_comment_T_rd'] = "Ring-down time, microseconds"
             
-            if 'Z' in self.transducer_params:
-                output_data['Z'] = self.transducer_params['Z']
+            if 'Z' in params:
+                output_data['Z'] = params['Z']
                 output_data['_comment_Z'] = "Nominal impedance, Ohms"
             
-            if 'V_max' in self.transducer_params:
-                output_data['V_max'] = self.transducer_params['V_max']
+            # V_max (SonarCore format - case sensitive)
+            if 'V_max' in params:
+                output_data['V_max'] = params['V_max']
+                output_data['_comment_V_max'] = "Maximum transmit voltage, Vrms"
+            elif 'v_max' in params:
+                output_data['V_max'] = params['v_max']
                 output_data['_comment_V_max'] = "Maximum transmit voltage, Vrms"
             
-            if 'C0' in self.transducer_params:
+            if 'C0' in params:
                 # C0 is already stored in Farads from parsePDFTransducerParams
-                output_data['C0'] = self.transducer_params['C0']  # Already in F
+                output_data['C0'] = params['C0']  # Already in F
                 output_data['_comment_C0'] = "Static capacitance, F"
             
-            if 'beam_pattern_horizontal' in self.transducer_params:
-                output_data['beam_pattern_horizontal'] = self.transducer_params['beam_pattern_horizontal']
+            if 'beam_pattern_horizontal' in params:
+                output_data['beam_pattern_horizontal'] = params['beam_pattern_horizontal']
             
-            if 'beam_pattern_vertical' in self.transducer_params:
-                output_data['beam_pattern_vertical'] = self.transducer_params['beam_pattern_vertical']
+            if 'beam_pattern_vertical' in params:
+                output_data['beam_pattern_vertical'] = params['beam_pattern_vertical']
             
             # Get source filename
-            source_name = self.transducer_params.get('source', 'Unknown')
+            source_name = params.get('source', 'Unknown')
             if source_name == 'Unknown' and self.pdf_path:
                 # pdf_path can be either Path object or string
                 if isinstance(self.pdf_path, Path):
@@ -1260,7 +1765,7 @@ class GraphExtractorApp(QMainWindow):
                     # It's a string, extract filename
                     source_name = Path(self.pdf_path).name
             output_data['source'] = source_name
-            output_data['version'] = self.transducer_params.get('version', '1.0')
+            output_data['version'] = params.get('version', '1.0')
             
             # Add BVD model type and parameters if available
             if hasattr(self, 'bvd_params') and self.bvd_params:
@@ -2879,6 +3384,10 @@ class GraphExtractorApp(QMainWindow):
             if not raw_results:
                 logger.warning("No parameters extracted from PDF")
                 self.transducer_params = None
+                self.all_models_data = None  # Clear models data
+                # Update table to show only Default column
+                if hasattr(self, 'transducer_params_table'):
+                    self.updateTransducerParamsTable()
                 return
             
             # Convert to SonarCore format
@@ -2900,9 +3409,20 @@ class GraphExtractorApp(QMainWindow):
             if raw_results.get('f_max'):
                 params['f_max'] = raw_results['f_max']
             
-            # Calculate bandwidth if f_min and f_max are available
-            if params.get('f_min') and params.get('f_max'):
-                params['B_tr'] = params['f_max'] - params['f_min']
+            # Calculate bandwidth (B_tr)
+            # Note: B_tr is model-specific and stored in all_models_data['model']['bandwidth']
+            # Only calculate general B_tr if we don't have models data
+            if not raw_results.get('models') or len(raw_results.get('models', {})) == 0:
+                # Single model case - calculate B_tr if bandwidth not in models
+                if raw_results.get('bandwidth_min') and raw_results.get('bandwidth_max'):
+                    params['B_tr'] = raw_results['bandwidth_max'] - raw_results['bandwidth_min']
+                    logger.info(f"B_tr calculated from bandwidth: {params['B_tr']/1000:.1f} kHz")
+                elif params.get('f_min') and params.get('f_max'):
+                    params['B_tr'] = params['f_max'] - params['f_min']
+                    logger.info(f"B_tr calculated from f_max - f_min: {params['B_tr']/1000:.1f} kHz")
+            else:
+                # Multiple models - B_tr is stored in each model's bandwidth
+                logger.info("B_tr is model-specific, stored in all_models_data")
             
             # Convert sensitivity parameters
             if raw_results.get('tx_sensitivity'):
@@ -2943,14 +3463,30 @@ class GraphExtractorApp(QMainWindow):
                 # T_rd ≈ Q / (π * f_0) in seconds, convert to microseconds
                 params['T_rd'] = (params['Q'] / (np.pi * params['f_0'])) * 1e6
             
+            # Store all models data if available (from raw_results, not params)
+            if 'models' in raw_results and raw_results['models'] and isinstance(raw_results['models'], dict):
+                self.all_models_data = raw_results['models']
+                logger.info(f"Stored {len(self.all_models_data)} models: {list(self.all_models_data.keys())}")
+                # Update model combo box
+                if hasattr(self, 'model_combo'):
+                    self.model_combo.clear()
+                    self.model_combo.addItem("Default")
+                    for model_key in sorted(self.all_models_data.keys()):
+                        self.model_combo.addItem(model_key)
+                    self.model_combo.setEnabled(True)
+                    self.selected_model = "Default"  # Reset to default
+            else:
+                self.all_models_data = None
+                if hasattr(self, 'model_combo'):
+                    self.model_combo.setEnabled(False)
+                    self.model_combo.clear()
+                    self.model_combo.addItem("Default")
+            
             # Store parameters
             self.transducer_params = params
             
-            # Update table
+            # Update table - this will show all models
             self.updateTransducerParamsTable()
-            
-            # Enable TAB 7
-            self.tabs.setTabEnabled(6, True)
             
             logger.info(f"Successfully extracted {len(params)} parameters from PDF")
             
@@ -2958,6 +3494,10 @@ class GraphExtractorApp(QMainWindow):
             logger.error(f"Error parsing PDF: {e}", exc_info=True)
             QMessageBox.warning(self, "Parsing Error", f"Failed to parse transducer parameters from PDF:\n{e}")
             self.transducer_params = None
+            self.all_models_data = None  # Clear models data on error
+            # Update table to show only Default column
+            if hasattr(self, 'transducer_params_table'):
+                self.updateTransducerParamsTable()
     
     def loadPDFFromButton(self):
         """Load PDF via button with adjustable zoom"""
