@@ -4219,7 +4219,9 @@ class GraphExtractorApp(QMainWindow):
                         writer.writerow([f"# {func['name']}"])
                         writer.writerow(['Frequency (kHz)', 'Value'])
                         
-                        for x, y in func['data']:
+                        # Export original data points without fitting
+                        original_data = func.get('original_points', func.get('data', []))
+                        for x, y in original_data:
                             writer.writerow([f"{x:.6f}", f"{y:.6f}"])
                         
                         writer.writerow([])
@@ -4241,10 +4243,12 @@ class GraphExtractorApp(QMainWindow):
             try:
                 export_data = []
                 for func in self.all_functions:
+                    # Use original points for export (without fitting)
+                    original_data = func.get('original_points', func.get('data', []))
                     func_data = {
                         'name': func['name'],
-                        'data': [[x, y] for x, y in func['data']],
-                        'original_points': [[x, y] for x, y in func.get('original_points', [])],
+                        'data': [[x, y] for x, y in original_data],
+                        'original_points': [[x, y] for x, y in original_data],
                         'fitting_type': func.get('fitting_type', 'spline'),
                         'smoothing': func.get('smoothing', 0.0),
                         'poly_degree': func.get('poly_degree', 3),
